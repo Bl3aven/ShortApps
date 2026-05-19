@@ -226,7 +226,6 @@
 .section-heading p,
 .preview-topline p,
 .selected-entity-card p,
-.device-card p,
 .meta-row p,
 .inline-info,
 .note-box,
@@ -243,8 +242,7 @@
 .dashboard-layout,
 .applications-layout,
 .wallpapers-layout,
-.pages-layout,
-.devices-layout {
+.pages-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 340px;
   gap: 16px;
@@ -259,11 +257,9 @@
 .app-manager,
 .wallpaper-manager,
 .pages-manager,
-.devices-manager,
 .editor-panel,
 .wallpaper-editor,
 .page-editor,
-.device-editor,
 .settings-main,
 .system-card {
   padding: 22px;
@@ -283,7 +279,6 @@
 .editor-panel h2,
 .wallpaper-editor h2,
 .page-editor h2,
-.device-editor h2,
 .system-card h2,
 .pairing-panel h2,
 .settings-main h2 {
@@ -1203,74 +1198,6 @@
   background: #fff;
 }
 
-.authorized-screen {
-  position: relative;
-  z-index: 2;
-  height: 100%;
-  display: grid;
-  place-items: center;
-  padding-left: 22px;
-}
-
-.auth-card {
-  width: min(310px, 74%);
-  display: grid;
-  justify-items: center;
-  gap: 9px;
-  padding: 20px;
-  border: 1px solid rgba(255, 255, 255, 0.26);
-  border-radius: 8px;
-  background: rgba(15, 23, 42, 0.48);
-  backdrop-filter: blur(14px);
-  text-align: center;
-}
-
-.auth-card h3 {
-  margin: 0;
-  font-size: 20px;
-}
-
-.auth-card p,
-.auth-card span {
-  margin: 0;
-  font-size: 12px;
-}
-
-.auth-action {
-  width: 100%;
-  min-height: 34px;
-  display: grid;
-  place-items: center;
-  border-radius: 8px;
-  background: linear-gradient(180deg, #2f78ff, #0f62ff);
-  color: #fff;
-}
-
-.auth-card span {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.phone-frame.small .auth-card {
-  gap: 4px;
-  padding: 10px;
-}
-
-.phone-frame.small .auth-card h3 {
-  font-size: 11px;
-}
-
-.phone-frame.small .auth-card p,
-.phone-frame.small .auth-card span {
-  font-size: 7px;
-}
-
-.phone-frame.small .auth-action {
-  min-height: 20px;
-  font-size: 8px;
-}
-
 .search-bar {
   min-height: 40px;
   display: flex;
@@ -1558,8 +1485,7 @@
   accent-color: #1262ff;
 }
 
-.page-card-grid,
-.device-card-grid {
+.page-card-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
@@ -1620,72 +1546,16 @@
   cursor: pointer;
 }
 
-.device-card {
-  position: relative;
-  min-width: 0;
-  display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.26);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.66);
-  cursor: pointer;
-}
-
-.device-card .badge {
-  position: absolute;
-  top: 14px;
-  right: 14px;
-  max-width: 86px;
-}
-
-.device-card.active {
-  border-color: #1262ff;
-  box-shadow: 0 0 0 1px rgba(18, 98, 255, 0.28);
-}
-
-.device-thumb {
-  width: 48px;
-  height: 74px;
-  display: grid;
-  place-items: center;
-  border-radius: 8px;
-  border: 3px solid #0b1020;
-  background:
-    linear-gradient(150deg, rgba(255, 255, 255, 0.75), transparent 30%),
-    linear-gradient(180deg, var(--device-color), #020617);
-  color: #fff;
-}
-
-.device-thumb.small {
-  width: 42px;
-  height: 62px;
-}
-
-.device-main {
-  min-width: 0;
-  padding-right: 86px;
-}
-
-.device-main strong,
-.device-main p {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.device-card p {
-  margin: 5px 0 0;
-  font-size: 12px;
-}
-
 .pairing-panel {
   margin-top: 18px;
   padding: 18px;
   border: 1px solid rgba(148, 163, 184, 0.24);
   border-radius: 8px;
   background: rgba(255, 255, 255, 0.54);
+}
+
+.compact-pairing {
+  margin-top: 14px;
 }
 
 .pairing-content {
@@ -1832,15 +1702,6 @@
 
 .server-grid .soft-button {
   grid-column: 1 / -1;
-}
-
-.settings-actions-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 240px;
-  gap: 10px 18px;
-  align-items: center;
-  color: #273449;
-  font-size: 14px;
 }
 
 .network-settings {
@@ -2005,7 +1866,6 @@
   .applications-layout,
   .wallpapers-layout,
   .pages-layout,
-  .devices-layout,
   .settings-layout {
     grid-template-columns: 1fr;
   }
@@ -2042,8 +1902,7 @@
   .shortcut-grid,
   .detected-grid,
   .wallpaper-grid,
-  .page-card-grid,
-  .device-card-grid {
+  .page-card-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 

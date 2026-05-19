@@ -14,6 +14,41 @@ function getCertificateDirectory() {
   return join(process.env.SHORTAPPS_DATA_DIR ?? join(projectRoot, 'data'), 'certificates')
 }
 
+async function loadConfiguredCertificate() {
+  const pfxPath = process.env.SHORTAPPS_TLS_PFX
+  const certPath = process.env.SHORTAPPS_TLS_CERT
+  const keyPath = process.env.SHORTAPPS_TLS_KEY
+  const caPath = process.env.SHORTAPPS_TLS_CA
+  const configuredPassphrase = process.env.SHORTAPPS_TLS_PASSPHRASE
+
+  if (pfxPath) {
+    return {
+      options: {
+        pfx: await readFile(pfxPath),
+        ...(configuredPassphrase ? { passphrase: configuredPassphrase } : {}),
+      },
+      type: 'custom-pfx',
+      certificatePath: pfxPath,
+    }
+  }
+
+  if (!certPath && !keyPath) return null
+  if (!certPath || !keyPath) {
+    throw new Error('SHORTAPPS_TLS_CERT_AND_KEY_REQUIRED')
+  }
+
+  return {
+    options: {
+      cert: await readFile(certPath),
+      key: await readFile(keyPath),
+      ...(caPath ? { ca: await readFile(caPath) } : {}),
+      ...(configuredPassphrase ? { passphrase: configuredPassphrase } : {}),
+    },
+    type: 'custom-pem',
+    certificatePath: certPath,
+  }
+}
+
 function psQuote(value = '') {
   return `'${String(value).replace(/'/g, "''")}'`
 }
@@ -127,6 +162,9 @@ async function generateOpenSslCertificate({ addresses, keyPath, certPath }) {
 }
 
 export async function ensureHttpsCertificate(addresses) {
+  const configuredCertificate = await loadConfiguredCertificate()
+  if (configuredCertificate) return configuredCertificate
+
   const normalizedAddresses = normalizeAddresses(addresses)
   const certificateDirectory = getCertificateDirectory()
   const metadataPath = join(certificateDirectory, 'metadata.json')

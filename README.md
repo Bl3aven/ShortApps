@@ -1,7 +1,8 @@
 # ShortApps
 
 Prototype React/Vite de l'interface ShortApps : configuration PC, dashboards mobiles,
-raccourcis personnalisables, fonds d'ecran, pages, appareils autorises et appairage QR Code.
+raccourcis personnalisables, fonds d'ecran, pages, scan Windows, lancement
+d'applications et appairage QR Code.
 
 ## Lancer en developpement
 
@@ -67,11 +68,39 @@ Le certificat HTTPS local est genere avec toutes les IP LAN detectees au
 demarrage. Si une nouvelle interface apparait apres le lancement de ShortApps,
 relancez l'application pour regenerer le certificat avec cette nouvelle IP.
 
+Important pour iOS : le certificat HTTPS local genere par ShortApps est auto-signe.
+Il aide au developpement local, mais il n'est pas suffisant pour une webapp iOS
+propre sans action manuelle de confiance sur l'iPhone. Le choix recommande pour
+la V6 est d'utiliser un domaine reel avec certificat public, puis de faire pointer
+ce domaine vers l'IP LAN du PC quand le telephone est a la maison ou au bureau.
+Exemple : `https://shortapps.example.com` pointe vers `192.168.0.55` sur le LAN
+et le QR Code utilise cette URL. Ce chemin garde la latence locale, contrairement
+a un proxy Internet qui ajoute un aller-retour reseau.
+
+Si vous possedez deja un certificat public pour ce domaine, ShortApps peut
+l'utiliser directement au demarrage :
+
+```powershell
+$env:SHORTAPPS_TLS_CERT="C:\certs\shortapps.crt"
+$env:SHORTAPPS_TLS_KEY="C:\certs\shortapps.key"
+ShortApps.exe
+```
+
+Un fichier PFX est aussi supporte avec `SHORTAPPS_TLS_PFX` et, si besoin,
+`SHORTAPPS_TLS_PASSPHRASE`.
+
+Un proxy/VPS HTTPS reste possible pour une future V7/V8 si l'objectif est
+d'acceder au PC depuis n'importe quel reseau. Dans ce cas, le proxy devra
+terminer TLS avec un certificat public et relayer vers le PC par tunnel/VPN.
+Ce mode est plus souple, mais moins bas-latence et demandera une authentification
+par appareil plus robuste avant usage reel.
+
 `/api/status` renvoie aussi le nom reel de la machine (`pcName`) ; l'en-tete du
 telephone dans l'interface utilise cette valeur.
 
 `/api/config` partage la configuration entre l'interface Windows et la webapp
-telephone. Les changements de pages, raccourcis, fonds et appareils sont ecrits
+telephone. Les changements de pages, raccourcis, fonds, exposition reseau et URL
+mobile HTTPS sont ecrits
 dans `data/shortapps-config.json`, puis relus par `/mobile`.
 
 Le QR Code d'appairage pointe vers `/mobile?pair=...&code=...` afin que le
@@ -79,6 +108,10 @@ telephone ouvre directement la webapp locale en plein ecran.
 Quand une paire active est enregistree dans la configuration, le serveur local
 verifie aussi ces parametres avant de servir `/mobile` et `/api/config` a un
 client non-localhost.
+
+Depuis la V6, l'ecran Parametres permet aussi de renseigner une URL mobile HTTPS
+publique ou LAN, par exemple `https://shortapps.example.com`. Si elle est valide,
+le QR Code l'utilise a la place de l'adresse IP locale.
 
 `/api/apps/scan` est dynamique sur Windows. Il scanne :
 

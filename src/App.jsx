@@ -33,7 +33,7 @@ import {
 import './App.css'
 
 const DEFAULT_PC_NAME = 'ShortApps PC'
-const APP_VERSION = '5.0.0'
+const APP_VERSION = '6.0.0'
 const HTTPS_SERVER_PORT = 56322
 const PcNameContext = createContext(DEFAULT_PC_NAME)
 const DEFAULT_NETWORK_EXPOSURE = {
@@ -75,7 +75,6 @@ const NAV_ITEMS = [
   { id: 'applications', label: 'Applications', icon: AppWindow },
   { id: 'wallpapers', label: "Fonds d'écran", icon: ImageIcon },
   { id: 'pages', label: 'Pages', icon: Layers },
-  { id: 'devices', label: 'Appareil', icon: Smartphone },
   { id: 'settings', label: 'Paramètres', icon: Settings },
 ]
 
@@ -388,67 +387,6 @@ const WALLPAPERS = [
   },
 ]
 
-const INITIAL_DEVICES = [
-  {
-    id: 'iphone-matt',
-    name: 'iPhone de Matt',
-    platform: 'iPhone',
-    browser: 'Safari',
-    identifier: 'DEV-AX24-19F',
-    ip: '192.168.1.24',
-    firstConnection: '12/06/2026',
-    lastConnection: "à l'instant",
-    status: 'authorized',
-    remembered: true,
-    color: '#2563eb',
-  },
-  {
-    id: 'galaxy-s24',
-    name: 'Galaxy S24',
-    platform: 'Android',
-    browser: 'Chrome',
-    identifier: 'DEV-GS24-77C',
-    ip: '192.168.1.31',
-    firstConnection: '10/06/2026',
-    lastConnection: 'il y a 12 min',
-    status: 'authorized',
-    remembered: true,
-    color: '#22c55e',
-  },
-  {
-    id: 'ipad-salon',
-    name: 'iPad Salon',
-    platform: 'iPadOS',
-    browser: 'Safari',
-    identifier: 'DEV-IPAD-404',
-    ip: '192.168.1.42',
-    firstConnection: '05/06/2026',
-    lastConnection: 'hier',
-    status: 'offline',
-    remembered: true,
-    color: '#334155',
-  },
-  {
-    id: 'pixel-8',
-    name: 'Pixel 8',
-    platform: 'Android',
-    browser: 'Chrome',
-    identifier: 'DEV-PX8-REV',
-    ip: '192.168.1.37',
-    firstConnection: '02/06/2026',
-    lastConnection: 'il y a 3 jours',
-    status: 'revoked',
-    remembered: false,
-    color: '#f97316',
-  },
-]
-
-const getStatusLabel = (status) => {
-  if (status === 'authorized') return 'Autorisé'
-  if (status === 'revoked') return 'Révoqué'
-  return 'Hors ligne'
-}
-
 const createPairingToken = () => {
   const code = `SHA-${Math.floor(1000 + Math.random() * 9000)}`
   const randomPart =
@@ -482,6 +420,21 @@ const getLocalServer = () => {
     exposedUrls: [],
     networkExposure: DEFAULT_NETWORK_EXPOSURE,
     httpsAvailable: true,
+  }
+}
+
+const normalizePublicAccessUrl = (value = '') => {
+  const trimmedValue = value.trim()
+  if (!trimmedValue) return ''
+
+  try {
+    const url = new URL(trimmedValue)
+    if (url.protocol !== 'https:') return ''
+
+    const normalizedPath = url.pathname.replace(/\/+$/, '')
+    return `${url.origin}${normalizedPath === '' ? '' : normalizedPath}`
+  } catch {
+    return ''
   }
 }
 
@@ -594,17 +547,15 @@ function App() {
     darken: 25,
     fit: 'Remplir',
   })
-  const [devices, setDevices] = usePersistentState('shortapps.devices', INITIAL_DEVICES)
-  const [selectedDeviceId, setSelectedDeviceId] = useState('iphone-matt')
   const [pairing, setPairing] = useState(() => createPairingToken())
   const [qrSrc, setQrSrc] = useState('')
   const [phoneMode, setPhoneMode] = useState('landscape')
   const [appSearch, setAppSearch] = useState('')
   const [wallpaperSearch, setWallpaperSearch] = useState('')
   const [pageSearch, setPageSearch] = useState('')
-  const [deviceSearch, setDeviceSearch] = useState('')
   const [appFilter, setAppFilter] = useState('Toutes')
   const [wallpaperFilter, setWallpaperFilter] = useState('Tous')
+  const [publicAccessUrl, setPublicAccessUrl] = usePersistentState('shortapps.publicAccessUrl', '')
   const [scanState, setScanState] = useState('idle')
   const [validationState, setValidationState] = useState('idle')
   const [configReady, setConfigReady] = useState(false)
@@ -617,17 +568,16 @@ function App() {
   const selectedApp = catalog.find((app) => app.id === selectedAppId) ?? catalog[0]
   const selectedWallpaper =
     WALLPAPERS.find((wallpaper) => wallpaper.id === selectedWallpaperId) ?? WALLPAPERS[0]
-  const selectedDevice =
-    devices.find((device) => device.id === selectedDeviceId) ?? devices[0]
-  const authorizedCount = devices.filter((device) => device.status === 'authorized').length
+  const publicMobileBaseUrl = normalizePublicAccessUrl(publicAccessUrl)
   const mobileUrl = useMemo(() => {
     const params = new URLSearchParams({
       pair: pairing.token,
       code: pairing.code,
     })
+    const mobileBaseUrl = publicMobileBaseUrl || localServer.url
 
-    return `${localServer.url}/mobile?${params.toString()}`
-  }, [localServer.url, pairing.code, pairing.token])
+    return `${mobileBaseUrl}/mobile?${params.toString()}`
+  }, [localServer.url, pairing.code, pairing.token, publicMobileBaseUrl])
 
   const updateNetworkExposure = useCallback((nextExposure) => {
     setNetworkExposure((currentExposure) => {
@@ -701,9 +651,9 @@ function App() {
           if (Array.isArray(config.pages)) setPages(config.pages)
           if (config.selectedWallpaperId) setSelectedWallpaperId(config.selectedWallpaperId)
           if (config.wallpaperSettings) setWallpaperSettings(config.wallpaperSettings)
-          if (Array.isArray(config.devices)) setDevices(config.devices)
           if (config.pairing?.token && config.pairing?.code) setPairing(config.pairing)
           if (config.networkExposure) updateNetworkExposure(config.networkExposure)
+          if (typeof config.publicAccessUrl === 'string') setPublicAccessUrl(config.publicAccessUrl)
         }
 
         setConfigReady(true)
@@ -718,7 +668,7 @@ function App() {
   }, [
     isMobileWebApp,
     setCatalog,
-    setDevices,
+    setPublicAccessUrl,
     setPages,
     setSelectedWallpaperId,
     setWallpaperSettings,
@@ -742,9 +692,9 @@ function App() {
             pages,
             selectedWallpaperId,
             wallpaperSettings,
-            devices,
             pairing,
             networkExposure,
+            publicAccessUrl,
           },
         }),
       }).catch(() => {})
@@ -754,10 +704,10 @@ function App() {
   }, [
     catalog,
     configReady,
-    devices,
     networkExposure,
     pages,
     pairing,
+    publicAccessUrl,
     selectedWallpaperId,
     wallpaperSettings,
   ])
@@ -881,12 +831,6 @@ function App() {
     page.name.toLowerCase().includes(pageSearch.toLowerCase()),
   )
 
-  const filteredDevices = devices.filter((device) =>
-    `${device.name} ${device.platform} ${device.ip}`
-      .toLowerCase()
-      .includes(deviceSearch.toLowerCase()),
-  )
-
   const updateSelectedApp = (patch) => {
     setCatalog((currentCatalog) =>
       currentCatalog.map((app) => (app.id === selectedApp.id ? { ...app, ...patch } : app)),
@@ -902,14 +846,6 @@ function App() {
   const setDefaultPage = (pageId) => {
     setPages((currentPages) =>
       currentPages.map((page) => ({ ...page, default: page.id === pageId })),
-    )
-  }
-
-  const updateSelectedDevice = (patch) => {
-    setDevices((currentDevices) =>
-      currentDevices.map((device) =>
-        device.id === selectedDevice.id ? { ...device, ...patch } : device,
-      ),
     )
   }
 
@@ -1025,17 +961,6 @@ function App() {
     setSelectedPageId(remainingPages[0].id)
   }
 
-  const revokeDevice = () => {
-    updateSelectedDevice({ status: 'revoked', remembered: false })
-  }
-
-  const removeDevice = () => {
-    if (devices.length === 1) return
-    const remainingDevices = devices.filter((device) => device.id !== selectedDevice.id)
-    setDevices(remainingDevices)
-    setSelectedDeviceId(remainingDevices[0].id)
-  }
-
   const renderContent = () => {
     if (activeTab === 'applications') {
       return (
@@ -1105,37 +1030,20 @@ function App() {
       )
     }
 
-    if (activeTab === 'devices') {
-      return (
-        <DevicesView
-          devices={filteredDevices}
-          selectedDevice={selectedDevice}
-          setSelectedDeviceId={setSelectedDeviceId}
-          updateSelectedDevice={updateSelectedDevice}
-          revokeDevice={revokeDevice}
-          removeDevice={removeDevice}
-          deviceSearch={deviceSearch}
-          setDeviceSearch={setDeviceSearch}
-          pairing={pairing}
-          regeneratePairing={() => setPairing(createPairingToken())}
-          qrSrc={qrSrc}
-          localServer={localServer}
-          mobileUrl={mobileUrl}
-        />
-      )
-    }
-
     if (activeTab === 'settings') {
       return (
         <SettingsView
           localServer={localServer}
-          authorizedCount={authorizedCount}
           selectedWallpaper={selectedWallpaper}
           wallpaperSettings={wallpaperSettings}
           pageApps={pageApps}
           pages={pages}
           serverStatus={serverStatus}
-          setActiveTab={setActiveTab}
+          pairing={pairing}
+          qrSrc={qrSrc}
+          mobileUrl={mobileUrl}
+          publicAccessUrl={publicAccessUrl}
+          setPublicAccessUrl={setPublicAccessUrl}
           regeneratePairing={() => setPairing(createPairingToken())}
           networkExposure={networkExposure}
           setNetworkExposure={updateNetworkExposure}
@@ -1164,8 +1072,6 @@ function App() {
       />
     )
   }
-
-  const showAuthorizedPhone = activeTab === 'devices'
 
   if (isMobileWebApp) {
     return (
@@ -1198,8 +1104,6 @@ function App() {
             apps={pageApps}
             wallpaper={selectedWallpaper}
             settings={wallpaperSettings}
-            authorized={showAuthorizedPhone}
-            device={selectedDevice}
             large
           />
         </aside>
@@ -1915,184 +1819,18 @@ function PagesView({
   )
 }
 
-function DevicesView({
-  devices,
-  selectedDevice,
-  setSelectedDeviceId,
-  updateSelectedDevice,
-  revokeDevice,
-  removeDevice,
-  deviceSearch,
-  setDeviceSearch,
-  pairing,
-  regeneratePairing,
-  qrSrc,
-  localServer,
-  mobileUrl,
-}) {
-  return (
-    <div className="devices-layout">
-      <section className="panel devices-manager">
-        <SectionHeading
-          title="Gérer les appareils"
-          subtitle="Autorisez, surveillez et révoquez les téléphones pouvant accéder au dashboard via le réseau local."
-        />
-
-        <div className="search-import-row">
-          <SearchBar
-            value={deviceSearch}
-            onChange={setDeviceSearch}
-            placeholder="Rechercher un appareil"
-          />
-          <button className="primary-button compact-button" type="button" onClick={regeneratePairing}>
-            <Plus size={17} />
-            Nouveau QR Code
-          </button>
-        </div>
-
-        <PanelToolbar title="Appareils autorisés" />
-        <div className="device-card-grid">
-          {devices.map((device) => (
-            <article
-              key={device.id}
-              className={`device-card ${device.id === selectedDevice.id ? 'active' : ''}`}
-              onClick={() => setSelectedDeviceId(device.id)}
-            >
-              <div className="device-thumb" style={{ '--device-color': device.color }}>
-                <Smartphone size={28} />
-              </div>
-              <div className="device-main">
-                <strong>{device.name}</strong>
-                <p>
-                  {device.platform} • {device.browser}
-                </p>
-                <p>Dernière connexion : {device.lastConnection}</p>
-                <p>IP locale : {device.ip}</p>
-              </div>
-              <Badge tone={device.status === 'revoked' ? 'red' : device.status === 'offline' ? 'gray' : 'green'}>
-                {getStatusLabel(device.status)}
-              </Badge>
-            </article>
-          ))}
-        </div>
-
-        <section className="pairing-panel">
-          <h2>Appairage par QR Code</h2>
-          <div className="pairing-content">
-            <div className="qr-box">
-              {qrSrc ? <img src={qrSrc} alt="QR Code d'appairage ShortApps" /> : <QrCode size={96} />}
-            </div>
-            <div className="pairing-copy">
-              <p>Scannez ce QR Code depuis le téléphone pour autoriser l'appareil sur ce PC.</p>
-              <div className="pair-code">
-                Code : <strong>{pairing.code}</strong>
-              </div>
-              <span>Valable 10 min • Réseau local uniquement</span>
-              <div className="button-row">
-                <button className="soft-button" type="button" onClick={regeneratePairing}>
-                  <RefreshCw size={16} />
-                  Régénérer
-                </button>
-                <button
-                  className="soft-button"
-                  type="button"
-                  onClick={() => navigator.clipboard?.writeText(mobileUrl)}
-                >
-                  <Link size={16} />
-                  Copier le lien
-                </button>
-              </div>
-            </div>
-          </div>
-        </section>
-      </section>
-
-      <section className="panel device-editor">
-        <h2>Appareil sélectionné</h2>
-        <div className="selected-entity-card">
-          <div className="device-thumb small" style={{ '--device-color': selectedDevice.color }}>
-            <Smartphone size={24} />
-          </div>
-          <div>
-            <strong>{selectedDevice.name}</strong>
-            <p>
-              {selectedDevice.platform} • {selectedDevice.browser}
-            </p>
-          </div>
-          <Badge tone={selectedDevice.status === 'revoked' ? 'red' : 'green'}>
-            {getStatusLabel(selectedDevice.status)}
-          </Badge>
-        </div>
-
-        <InfoList
-          rows={[
-            ["Nom de l'appareil", selectedDevice.name],
-            ['Identifiant', selectedDevice.identifier],
-            ['Adresse IP locale', selectedDevice.ip],
-            ['Première connexion', selectedDevice.firstConnection],
-            ['Dernière connexion', selectedDevice.lastConnection],
-            ['Accès', 'Réseau local uniquement'],
-          ]}
-        />
-
-        <ToggleRow
-          label="Appareil autorisé"
-          checked={selectedDevice.status === 'authorized'}
-          onChange={() =>
-            updateSelectedDevice({
-              status: selectedDevice.status === 'authorized' ? 'revoked' : 'authorized',
-            })
-          }
-        />
-        <ToggleRow
-          label="Mémoriser cet appareil"
-          checked={selectedDevice.remembered}
-          onChange={() => updateSelectedDevice({ remembered: !selectedDevice.remembered })}
-        />
-
-        <div className="button-row">
-          <button className="danger-button" type="button" onClick={revokeDevice}>
-            <ShieldCheck size={17} />
-            Révoquer
-          </button>
-          <button className="danger-button" type="button" onClick={removeDevice}>
-            <Trash2 size={17} />
-            Supprimer
-          </button>
-        </div>
-
-        <div className="thin-separator" />
-        <PanelToolbar title="Aperçu mobile" />
-        <PhonePreview
-          mode="landscape"
-          page={INITIAL_PAGES[0]}
-          pages={INITIAL_PAGES}
-          apps={APP_CATALOG.slice(0, 8)}
-          wallpaper={WALLPAPERS[0]}
-          settings={{ blur: 30, darken: 25, fit: 'Remplir' }}
-          authorized
-          device={selectedDevice}
-          small
-        />
-
-        <div className="inline-info">
-          <Info size={17} />
-          <span>Seuls les appareils appairés peuvent ouvrir {localServer.url}.</span>
-        </div>
-      </section>
-    </div>
-  )
-}
-
 function SettingsView({
   localServer,
-  authorizedCount,
   selectedWallpaper,
   wallpaperSettings,
   pageApps,
   pages,
   serverStatus,
-  setActiveTab,
+  pairing,
+  qrSrc,
+  mobileUrl,
+  publicAccessUrl,
+  setPublicAccessUrl,
   regeneratePairing,
   networkExposure,
   setNetworkExposure,
@@ -2112,6 +1850,8 @@ function SettingsView({
       ? networkInterfaces
       : networkInterfaces.filter((entry) => selectedInterfaceIds.has(entry.id))
   const displayedExposedCount = exposedInterfaces.length || networkInterfaces.length
+  const normalizedPublicUrl = normalizePublicAccessUrl(publicAccessUrl)
+  const publicUrlIsInvalid = publicAccessUrl.trim() !== '' && !normalizedPublicUrl
 
   const setExposureMode = (mode) => {
     setNetworkExposure((currentExposure) => {
@@ -2284,19 +2024,53 @@ function SettingsView({
           </div>
         </div>
 
-        <DividerTitle icon={Lock} title="Sécurité locale" />
-        <div className="settings-actions-grid">
-          <span>Accès limité au réseau local</span>
-          <button className="soft-button" type="button" onClick={() => setActiveTab('devices')}>
-            <Smartphone size={16} />
-            Gérer les appareils
-          </button>
-          <span>Appareils autorisés uniquement via QR Code</span>
-          <button className="soft-button" type="button" onClick={regeneratePairing}>
-            <QrCode size={16} />
-            Régénérer le QR Code
-          </button>
+        <DividerTitle icon={Lock} title="Accès mobile HTTPS" />
+        <Field label="URL HTTPS publique ou domaine LAN">
+          <input
+            value={publicAccessUrl}
+            onChange={(event) => setPublicAccessUrl(event.target.value)}
+            placeholder="https://shortapps.example.com"
+          />
+        </Field>
+
+        <div className={`inline-info ${publicUrlIsInvalid ? 'validation-warning' : ''}`}>
+          <Info size={17} />
+          <span>
+            {publicUrlIsInvalid
+              ? "L'URL mobile doit commencer par https:// pour etre utilisee par iOS."
+              : "Vide, le QR utilise l'adresse locale HTTPS du PC. Renseignee, cette URL remplace l'adresse locale dans le QR Code."}
+          </span>
         </div>
+
+        <section className="pairing-panel compact-pairing">
+          <h2>QR Code mobile</h2>
+          <div className="pairing-content">
+            <div className="qr-box">
+              {qrSrc ? <img src={qrSrc} alt="QR Code d'appairage ShortApps" /> : <QrCode size={96} />}
+            </div>
+            <div className="pairing-copy">
+              <p>Scannez ce QR Code depuis l'iPhone. Il ouvre directement la webapp mobile avec le jeton actif.</p>
+              <div className="pair-code">
+                Code : <strong>{pairing.code}</strong>
+              </div>
+              <span>{normalizedPublicUrl ? 'URL HTTPS personnalisee' : 'URL locale HTTPS du PC'}</span>
+              <div className="button-row">
+                <button className="soft-button" type="button" onClick={regeneratePairing}>
+                  <RefreshCw size={16} />
+                  Regenerer
+                </button>
+                <button
+                  className="soft-button"
+                  type="button"
+                  onClick={() => navigator.clipboard?.writeText(mobileUrl)}
+                >
+                  <Link size={16} />
+                  Copier le lien
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
       </section>
 
       <aside className="settings-side">
@@ -2307,10 +2081,10 @@ function SettingsView({
               ['Serveur local', isOnline ? 'En ligne' : 'Hors ligne'],
               ['IP primaire', localServer.ip],
               ['Interfaces exposées', `${displayedExposedCount}/${networkInterfaces.length}`],
-              ['Appareils autorisés', String(authorizedCount)],
+              ['URL mobile', normalizedPublicUrl ? 'HTTPS externe' : 'HTTPS local'],
               ['Version', APP_VERSION],
             ]}
-            icons={[Network, Server, Network, Smartphone, Info]}
+            icons={[Network, Server, Network, QrCode, Info]}
           />
         </section>
         <section className="panel system-card">
@@ -2522,8 +2296,6 @@ function PhonePreview({
   apps,
   wallpaper,
   settings,
-  authorized = false,
-  device,
   large = false,
   small = false,
   thumbnail = false,
@@ -2557,40 +2329,19 @@ function PhonePreview({
             style={{ background: `rgba(2, 8, 23, ${settings.darken / 100})` }}
           />
 
-          {authorized ? (
-            <div className="authorized-screen">
-              <div className="auth-card">
-                <ShieldCheck size={42} />
-                <h3>Appareil autorisé</h3>
-                <p>{device?.name ?? 'Ce téléphone'} est enregistré pour ce PC.</p>
-                <span className="auth-action">Dashboard accessible</span>
-                <span>
-                  <Lock size={13} />
-                  Accès local sécurisé
-                </span>
-                <span>
-                  <Check size={13} />
-                  Connexion mémorisée
-                </span>
+          <div className="phone-header">
+            <span>{pcName}</span>
+            <strong>ShortApps</strong>
+          </div>
+          <div className="phone-app-grid">
+            {visibleApps.map((app) => (
+              <div className="phone-app" key={`${page.id}-${app.id}`}>
+                <AppIcon app={app} phone />
+                <span>{app.name}</span>
               </div>
-            </div>
-          ) : (
-            <>
-              <div className="phone-header">
-                <span>{pcName}</span>
-                <strong>ShortApps</strong>
-              </div>
-              <div className="phone-app-grid">
-                {visibleApps.map((app) => (
-                  <div className="phone-app" key={`${page.id}-${app.id}`}>
-                    <AppIcon app={app} phone />
-                    <span>{app.name}</span>
-                  </div>
-                ))}
-              </div>
-              <PageDots pages={pages} activePageId={page.id} />
-            </>
-          )}
+            ))}
+          </div>
+          <PageDots pages={pages} activePageId={page.id} />
         </div>
       </div>
     </div>
