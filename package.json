@@ -1,7 +1,7 @@
 {
   "name": "shortapps",
   "private": true,
-  "version": "6.0.0",
+  "version": "1.6.0",
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
@@ -10,6 +10,8 @@
     "electron": "npm run build && electron .",
     "lint": "eslint .",
     "package:win": "npm run build && electron-packager . ShortApps --platform=win32 --arch=x64 --out=release --overwrite --prune=false --ignore='^/release($|/)' --ignore='^/data($|/)' --ignore='^/node_modules($|/)' --ignore='^/src($|/)' --ignore='^/public($|/)' --ignore='^/cahier-des-charges($|/)' --ignore='^/versioning($|/)' --ignore='^/token$'",
+    "sign:win": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/sign-windows.ps1",
+    "package:win:signed": "npm run package:win && npm run sign:win",
     "preview": "vite preview",
     "serve:local": "node server/local-server.js",
     "start": "npm run build && node server/local-server.js"
