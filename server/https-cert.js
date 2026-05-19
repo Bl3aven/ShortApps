@@ -18,6 +18,22 @@ function psQuote(value = '') {
   return `'${String(value).replace(/'/g, "''")}'`
 }
 
+function normalizeAddresses(addresses) {
+  const values = Array.isArray(addresses) ? addresses : [addresses]
+
+  return [...new Set(values.filter(Boolean))]
+}
+
+function sameAddresses(left = [], right = []) {
+  const sortedLeft = [...left].sort()
+  const sortedRight = [...right].sort()
+
+  return (
+    sortedLeft.length === sortedRight.length &&
+    sortedLeft.every((address, index) => address === sortedRight[index])
+  )
+}
+
 function runCommand(command, args, { input, timeoutMs = 12000 } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { windowsHide: true })
@@ -51,16 +67,19 @@ function runCommand(command, args, { input, timeoutMs = 12000 } = {}) {
   })
 }
 
-async function generateWindowsCertificate({ address, pfxPath }) {
+async function generateWindowsCertificate({ addresses, pfxPath }) {
   const pcName = getPcName()
+  const ipArray = `@(${addresses.map(psQuote).join(', ')})`
   const script = `
 $ErrorActionPreference = 'Stop'
 $pfxPath = ${psQuote(pfxPath)}
 $password = ConvertTo-SecureString -String ${psQuote(passphrase)} -Force -AsPlainText
 $pcName = ${psQuote(pcName)}
-$ipAddress = ${psQuote(address)}
+$ipAddresses = ${ipArray}
 $dnsNames = @('localhost', $pcName, "$pcName.local")
-$san = "2.5.29.17={text}dns=localhost&dns=$pcName&dns=$pcName.local&ipaddress=$ipAddress&ipaddress=127.0.0.1"
+$sanParts = @('dns=localhost', "dns=$pcName", "dns=$pcName.local", 'ipaddress=127.0.0.1')
+$sanParts += $ipAddresses | ForEach-Object { "ipaddress=$_" }
+$san = "2.5.29.17={text}" + ($sanParts -join '&')
 $certParams = @{
   DnsName = $dnsNames
   CertStoreLocation = 'Cert:\\CurrentUser\\My'
@@ -80,7 +99,13 @@ Remove-Item -Path ("Cert:\\CurrentUser\\My\\" + $cert.Thumbprint) -ErrorAction S
   await runCommand('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', script])
 }
 
-async function generateOpenSslCertificate({ address, keyPath, certPath }) {
+async function generateOpenSslCertificate({ addresses, keyPath, certPath }) {
+  const subjectAltName = [
+    'DNS:localhost',
+    'IP:127.0.0.1',
+    ...addresses.map((address) => `IP:${address}`),
+  ].join(',')
+
   await runCommand('openssl', [
     'req',
     '-x509',
@@ -97,11 +122,12 @@ async function generateOpenSslCertificate({ address, keyPath, certPath }) {
     '-subj',
     `/CN=ShortApps Local ${randomBytes(3).toString('hex')}`,
     '-addext',
-    `subjectAltName=DNS:localhost,IP:127.0.0.1,IP:${address}`,
+    `subjectAltName=${subjectAltName}`,
   ])
 }
 
-export async function ensureHttpsCertificate(address) {
+export async function ensureHttpsCertificate(addresses) {
+  const normalizedAddresses = normalizeAddresses(addresses)
   const certificateDirectory = getCertificateDirectory()
   const metadataPath = join(certificateDirectory, 'metadata.json')
   const pfxPath = join(certificateDirectory, 'shortapps-local.pfx')
@@ -113,7 +139,7 @@ export async function ensureHttpsCertificate(address) {
   try {
     const metadata = JSON.parse(await readFile(metadataPath, 'utf8'))
     if (
-      metadata.address === address &&
+      sameAddresses(metadata.addresses ?? [metadata.address].filter(Boolean), normalizedAddresses) &&
       ((metadata.type === 'pfx' && existsSync(pfxPath)) ||
         (metadata.type === 'pem' && existsSync(keyPath) && existsSync(certPath)))
     ) {
@@ -140,10 +166,14 @@ export async function ensureHttpsCertificate(address) {
   await rm(certPath, { force: true })
 
   if (process.platform === 'win32') {
-    await generateWindowsCertificate({ address, pfxPath })
+    await generateWindowsCertificate({ addresses: normalizedAddresses, pfxPath })
     await writeFile(
       metadataPath,
-      JSON.stringify({ address, type: 'pfx', generatedAt: new Date().toISOString() }, null, 2),
+      JSON.stringify(
+        { addresses: normalizedAddresses, type: 'pfx', generatedAt: new Date().toISOString() },
+        null,
+        2,
+      ),
     )
 
     return {
@@ -153,10 +183,14 @@ export async function ensureHttpsCertificate(address) {
     }
   }
 
-  await generateOpenSslCertificate({ address, keyPath, certPath })
+  await generateOpenSslCertificate({ addresses: normalizedAddresses, keyPath, certPath })
   await writeFile(
     metadataPath,
-    JSON.stringify({ address, type: 'pem', generatedAt: new Date().toISOString() }, null, 2),
+    JSON.stringify(
+      { addresses: normalizedAddresses, type: 'pem', generatedAt: new Date().toISOString() },
+      null,
+      2,
+    ),
   )
 
   return {

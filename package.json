@@ -1,7 +1,7 @@
 {
   "name": "shortapps",
   "private": true,
-  "version": "3.0.1",
+  "version": "4.0.0",
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
@@ -9,7 +9,7 @@
     "build": "vite build",
     "electron": "npm run build && electron .",
     "lint": "eslint .",
-    "package:win": "npm run build && electron-packager . ShortApps --platform=win32 --arch=x64 --out=release --overwrite --prune=false --ignore='^/release($|/)' --ignore='^/data($|/)' --ignore='^/node_modules($|/)' --ignore='^/src($|/)' --ignore='^/public($|/)' --ignore='^/cahier-des-charges($|/)' --ignore='^/versioning($|/)'",
+    "package:win": "npm run build && electron-packager . ShortApps --platform=win32 --arch=x64 --out=release --overwrite --prune=false --ignore='^/release($|/)' --ignore='^/data($|/)' --ignore='^/node_modules($|/)' --ignore='^/src($|/)' --ignore='^/public($|/)' --ignore='^/cahier-des-charges($|/)' --ignore='^/versioning($|/)' --ignore='^/token$'",
     "preview": "vite preview",
     "serve:local": "node server/local-server.js",
     "start": "npm run build && node server/local-server.js"

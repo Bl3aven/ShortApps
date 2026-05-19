@@ -33,9 +33,14 @@ import {
 import './App.css'
 
 const DEFAULT_PC_NAME = 'ShortApps PC'
-const APP_VERSION = '3.0.1'
+const APP_VERSION = '4.0.0'
 const HTTPS_SERVER_PORT = 56322
 const PcNameContext = createContext(DEFAULT_PC_NAME)
+const DEFAULT_NETWORK_EXPOSURE = {
+  mode: 'all',
+  selectedInterfaceIds: [],
+  primaryInterfaceId: '',
+}
 const NUMPAD_ROWS = [
   [
     { key: '/', label: '/' },
@@ -470,8 +475,42 @@ const getLocalServer = () => {
   return {
     ip,
     url: `https://${ip}:${HTTPS_SERVER_PORT}`,
+    port: 56321,
+    httpsPort: HTTPS_SERVER_PORT,
+    interfaces: [],
+    exposedInterfaces: [],
+    exposedUrls: [],
+    networkExposure: DEFAULT_NETWORK_EXPOSURE,
+    httpsAvailable: true,
   }
 }
+
+const normalizeNetworkExposure = (exposure = {}) => ({
+  mode: exposure.mode === 'selected' ? 'selected' : 'all',
+  selectedInterfaceIds: Array.isArray(exposure.selectedInterfaceIds)
+    ? [...new Set(exposure.selectedInterfaceIds.filter(Boolean))]
+    : [],
+  primaryInterfaceId:
+    typeof exposure.primaryInterfaceId === 'string' ? exposure.primaryInterfaceId : '',
+})
+
+const areNetworkExposuresEqual = (left, right) =>
+  JSON.stringify(normalizeNetworkExposure(left)) === JSON.stringify(normalizeNetworkExposure(right))
+
+const normalizeServerStatus = (status) => ({
+  ip: status.localIp,
+  url: status.localUrl,
+  httpUrl: status.httpUrl,
+  httpsUrl: status.httpsUrl,
+  port: status.port,
+  httpsPort: status.httpsPort,
+  httpsAvailable: status.httpsAvailable,
+  httpsError: status.httpsError,
+  interfaces: Array.isArray(status.interfaces) ? status.interfaces : [],
+  exposedInterfaces: Array.isArray(status.exposedInterfaces) ? status.exposedInterfaces : [],
+  exposedUrls: Array.isArray(status.exposedUrls) ? status.exposedUrls : [],
+  networkExposure: normalizeNetworkExposure(status.networkExposure),
+})
 
 const triggerHaptic = (duration = 12) => {
   if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
@@ -570,6 +609,7 @@ function App() {
   const initialValidationDone = useRef(false)
 
   const [localServer, setLocalServer] = useState(() => getLocalServer())
+  const [networkExposure, setNetworkExposure] = useState(DEFAULT_NETWORK_EXPOSURE)
   const [serverStatus, setServerStatus] = useState('checking')
   const selectedPage = pages.find((page) => page.id === selectedPageId) ?? pages[0]
   const selectedApp = catalog.find((app) => app.id === selectedAppId) ?? catalog[0]
@@ -586,6 +626,38 @@ function App() {
 
     return `${localServer.url}/mobile?${params.toString()}`
   }, [localServer.url, pairing.code, pairing.token])
+
+  const updateNetworkExposure = useCallback((nextExposure) => {
+    setNetworkExposure((currentExposure) => {
+      const normalizedNext =
+        typeof nextExposure === 'function'
+          ? normalizeNetworkExposure(nextExposure(currentExposure))
+          : normalizeNetworkExposure(nextExposure)
+
+      return areNetworkExposuresEqual(currentExposure, normalizedNext)
+        ? currentExposure
+        : normalizedNext
+    })
+  }, [])
+
+  const refreshServerStatus = useCallback(() => {
+    return fetch('/api/status')
+      .then((response) => {
+        if (!response.ok) throw new Error('STATUS_UNAVAILABLE')
+        return response.json()
+      })
+      .then((status) => {
+        if (!status) return
+        const normalizedStatus = normalizeServerStatus(status)
+        setLocalServer(normalizedStatus)
+        updateNetworkExposure(normalizedStatus.networkExposure)
+        if (status.pcName) setPcName(status.pcName)
+        setServerStatus('online')
+      })
+      .catch(() => {
+        setServerStatus('offline')
+      })
+  }, [updateNetworkExposure])
 
   useEffect(() => {
     const payload = {
@@ -629,6 +701,7 @@ function App() {
           if (config.wallpaperSettings) setWallpaperSettings(config.wallpaperSettings)
           if (Array.isArray(config.devices)) setDevices(config.devices)
           if (config.pairing?.token && config.pairing?.code) setPairing(config.pairing)
+          if (config.networkExposure) updateNetworkExposure(config.networkExposure)
         }
 
         setConfigReady(true)
@@ -647,30 +720,12 @@ function App() {
     setPages,
     setSelectedWallpaperId,
     setWallpaperSettings,
+    updateNetworkExposure,
   ])
 
   useEffect(() => {
-    let cancelled = false
-
-    fetch('/api/status')
-      .then((response) => {
-        if (!response.ok) throw new Error('STATUS_UNAVAILABLE')
-        return response.json()
-      })
-      .then((status) => {
-        if (!status || cancelled) return
-        setLocalServer({ ip: status.localIp, url: status.localUrl })
-        if (status.pcName) setPcName(status.pcName)
-        setServerStatus('online')
-      })
-      .catch(() => {
-        if (!cancelled) setServerStatus('offline')
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [])
+    refreshServerStatus().then(() => {})
+  }, [refreshServerStatus])
 
   useEffect(() => {
     if (!configReady) return undefined
@@ -687,13 +742,33 @@ function App() {
             wallpaperSettings,
             devices,
             pairing,
+            networkExposure,
           },
         }),
       }).catch(() => {})
     }, 250)
 
     return () => window.clearTimeout(saveTimer)
-  }, [catalog, configReady, devices, pages, pairing, selectedWallpaperId, wallpaperSettings])
+  }, [
+    catalog,
+    configReady,
+    devices,
+    networkExposure,
+    pages,
+    pairing,
+    selectedWallpaperId,
+    wallpaperSettings,
+  ])
+
+  useEffect(() => {
+    if (!configReady || isMobileWebApp) return undefined
+
+    const refreshTimer = window.setTimeout(() => {
+      refreshServerStatus()
+    }, 450)
+
+    return () => window.clearTimeout(refreshTimer)
+  }, [configReady, isMobileWebApp, networkExposure, refreshServerStatus])
 
   const runAppValidation = useCallback(async ({ silent = false } = {}) => {
     if (!silent) setValidationState('checking')
@@ -1060,6 +1135,8 @@ function App() {
           serverStatus={serverStatus}
           setActiveTab={setActiveTab}
           regeneratePairing={() => setPairing(createPairingToken())}
+          networkExposure={networkExposure}
+          setNetworkExposure={updateNetworkExposure}
         />
       )
     }
@@ -2015,10 +2092,82 @@ function SettingsView({
   serverStatus,
   setActiveTab,
   regeneratePairing,
+  networkExposure,
+  setNetworkExposure,
 }) {
   const pcName = useContext(PcNameContext)
-  const localPort = localServer.url.split(':').pop()
+  const normalizedExposure = normalizeNetworkExposure(networkExposure)
+  const localPort = String(
+    localServer.httpsAvailable
+      ? (localServer.httpsPort ?? HTTPS_SERVER_PORT)
+      : (localServer.port ?? 56321),
+  )
   const isOnline = serverStatus !== 'offline'
+  const networkInterfaces = localServer.interfaces ?? []
+  const selectedInterfaceIds = new Set(normalizedExposure.selectedInterfaceIds)
+  const exposedInterfaces =
+    normalizedExposure.mode === 'all'
+      ? networkInterfaces
+      : networkInterfaces.filter((entry) => selectedInterfaceIds.has(entry.id))
+  const displayedExposedCount = exposedInterfaces.length || networkInterfaces.length
+
+  const setExposureMode = (mode) => {
+    setNetworkExposure((currentExposure) => {
+      const current = normalizeNetworkExposure(currentExposure)
+      const fallbackInterfaceId =
+        current.primaryInterfaceId || localServer.networkExposure?.primaryInterfaceId || networkInterfaces[0]?.id || ''
+      const selectedInterfaceIds =
+        mode === 'selected' && current.selectedInterfaceIds.length === 0 && fallbackInterfaceId
+          ? [fallbackInterfaceId]
+          : current.selectedInterfaceIds
+
+      return {
+        ...current,
+        mode,
+        selectedInterfaceIds,
+        primaryInterfaceId: current.primaryInterfaceId || fallbackInterfaceId,
+      }
+    })
+  }
+
+  const setPrimaryInterface = (interfaceId) => {
+    setNetworkExposure((currentExposure) => {
+      const current = normalizeNetworkExposure(currentExposure)
+      const selectedIds = new Set(current.selectedInterfaceIds)
+      selectedIds.add(interfaceId)
+
+      return {
+        ...current,
+        selectedInterfaceIds: [...selectedIds],
+        primaryInterfaceId: interfaceId,
+      }
+    })
+  }
+
+  const toggleInterface = (interfaceId) => {
+    setNetworkExposure((currentExposure) => {
+      const current = normalizeNetworkExposure(currentExposure)
+      const selectedIds = new Set(current.selectedInterfaceIds)
+
+      if (selectedIds.has(interfaceId) && selectedIds.size > 1) {
+        selectedIds.delete(interfaceId)
+      } else {
+        selectedIds.add(interfaceId)
+      }
+
+      const nextSelectedIds = [...selectedIds]
+      const primaryInterfaceId = selectedIds.has(current.primaryInterfaceId)
+        ? current.primaryInterfaceId
+        : interfaceId
+
+      return {
+        ...current,
+        mode: 'selected',
+        selectedInterfaceIds: nextSelectedIds,
+        primaryInterfaceId,
+      }
+    })
+  }
 
   return (
     <div className="settings-layout">
@@ -2051,6 +2200,88 @@ function SettingsView({
           </a>
         </div>
 
+        <DividerTitle icon={Network} title="Exposition réseau" />
+        <div className="network-settings">
+          <div className="segmented full">
+            <button
+              type="button"
+              className={normalizedExposure.mode === 'all' ? 'active' : ''}
+              onClick={() => setExposureMode('all')}
+            >
+              Toutes les IP
+            </button>
+            <button
+              type="button"
+              className={normalizedExposure.mode === 'selected' ? 'active' : ''}
+              onClick={() => setExposureMode('selected')}
+            >
+              Sélection
+            </button>
+          </div>
+
+          <div className="network-interface-list">
+            {networkInterfaces.length === 0 && (
+              <div className="network-empty">
+                Aucune interface LAN privée détectée pour le moment.
+              </div>
+            )}
+
+            {networkInterfaces.map((entry) => {
+              const isExposed =
+                normalizedExposure.mode === 'all' || selectedInterfaceIds.has(entry.id)
+              const isPrimary =
+                normalizedExposure.primaryInterfaceId === entry.id || entry.primary
+
+              return (
+                <div
+                  key={entry.id}
+                  className={`network-interface-row ${isExposed ? 'active' : ''}`}
+                >
+                  <label className="network-check">
+                    <input
+                      type="checkbox"
+                      checked={isExposed}
+                      disabled={normalizedExposure.mode === 'all'}
+                      onChange={() => toggleInterface(entry.id)}
+                    />
+                    <span>
+                      <strong>{entry.name}</strong>
+                      <small>{entry.kind}</small>
+                    </span>
+                  </label>
+
+                  <code>{entry.address}</code>
+
+                  <button
+                    className={`compact-button ${isPrimary ? 'active' : ''}`}
+                    type="button"
+                    onClick={() => setPrimaryInterface(entry.id)}
+                  >
+                    {isPrimary ? 'QR' : 'Utiliser'}
+                  </button>
+
+                  <a
+                    className="compact-button"
+                    href={entry.localUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    <ExternalLink size={14} />
+                  </a>
+                </div>
+              )
+            })}
+          </div>
+
+          <div className="inline-info">
+            <Info size={17} />
+            <span>
+              Le serveur écoute sur toutes les interfaces ; en mode sélection,
+              seuls les sous-réseaux choisis peuvent accéder au mobile.
+            </span>
+          </div>
+        </div>
+
         <DividerTitle icon={Lock} title="Sécurité locale" />
         <div className="settings-actions-grid">
           <span>Accès limité au réseau local</span>
@@ -2072,11 +2303,12 @@ function SettingsView({
           <InfoList
             rows={[
               ['Serveur local', isOnline ? 'En ligne' : 'Hors ligne'],
-              ['Adresse locale', localServer.ip],
+              ['IP primaire', localServer.ip],
+              ['Interfaces exposées', `${displayedExposedCount}/${networkInterfaces.length}`],
               ['Appareils autorisés', String(authorizedCount)],
               ['Version', APP_VERSION],
             ]}
-            icons={[Network, Server, Smartphone, Info]}
+            icons={[Network, Server, Network, Smartphone, Info]}
           />
         </section>
         <section className="panel system-card">

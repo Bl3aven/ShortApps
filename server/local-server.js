@@ -7,11 +7,13 @@ import { dirname, extname, join, normalize, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   createStatusPayload,
+  getExposedInterfaces,
   getLanInterfaces,
   getPcName,
   getPreferredAddress,
   HTTPS_SERVER_PORT,
   isSameSubnet,
+  normalizeRemoteAddress,
   SERVER_PORT,
 } from './network.js'
 import { scanInstalledApps } from './app-scanner.js'
@@ -45,20 +47,22 @@ const mimeTypes = {
   '.woff2': 'font/woff2',
 }
 
-function normalizeRemoteAddress(remoteAddress = '') {
-  if (remoteAddress === '::1') return '127.0.0.1'
-  if (remoteAddress.startsWith('::ffff:')) return remoteAddress.slice(7)
-  return remoteAddress
-}
-
-function isAllowedLocalClient(request) {
+function isAllowedLocalClient(request, config) {
   const clientIp = normalizeRemoteAddress(request.socket.remoteAddress)
   if (clientIp === '127.0.0.1') return true
-  return getLanInterfaces().some((entry) => isSameSubnet(clientIp, entry))
+  return getExposedInterfaces(config?.networkExposure).some((entry) =>
+    isSameSubnet(clientIp, entry),
+  )
 }
 
 function isDesktopClient(request) {
   return normalizeRemoteAddress(request.socket.remoteAddress) === '127.0.0.1'
+}
+
+function getRequestHostAddress(request) {
+  const host = request.headers.host?.split(':')[0] ?? ''
+  if (host === 'localhost') return '127.0.0.1'
+  return host.replace(/^\[/, '').replace(/\]$/, '')
 }
 
 function sendJson(response, statusCode, payload) {
@@ -91,19 +95,25 @@ function readJsonBody(request) {
   })
 }
 
-function createPairingPayload() {
-  const lan = getPreferredAddress()
+function createPairingPayload(config) {
+  const status = createStatusPayload({
+    httpPort: port,
+    httpsPort,
+    httpsAvailable: httpsState.available,
+    httpsError: httpsState.error,
+    networkExposure: config?.networkExposure,
+  })
   const code = `SHA-${Math.floor(1000 + Math.random() * 9000)}`
-  const protocol = httpsState.available ? 'https' : 'http'
-  const mobilePort = httpsState.available ? httpsPort : port
 
   return {
     app: 'ShortApps',
     version: 1,
     type: 'pair-device',
     pcName: getPcName(),
-    localIp: lan.address,
-    localUrl: `${protocol}://${lan.address}:${mobilePort}`,
+    localIp: status.localIp,
+    localUrl: status.localUrl,
+    interfaces: status.exposedInterfaces,
+    urls: status.exposedUrls,
     httpsAvailable: httpsState.available,
     httpsError: httpsState.error,
     localOnly: true,
@@ -183,11 +193,21 @@ async function serveStatic(request, response) {
   createReadStream(filePath).pipe(response)
 }
 
-function handleRequest(request, response) {
-  if (!isAllowedLocalClient(request)) {
+async function handleRequestAsync(request, response) {
+  const config = await readConfig()
+
+  if (!isAllowedLocalClient(request, config)) {
     sendJson(response, 403, { error: 'LOCAL_NETWORK_ONLY' })
     return
   }
+
+  const status = createStatusPayload({
+    httpPort: port,
+    httpsPort,
+    httpsAvailable: httpsState.available,
+    httpsError: httpsState.error,
+    networkExposure: config?.networkExposure,
+  })
 
   if (
     httpsState.available &&
@@ -195,9 +215,13 @@ function handleRequest(request, response) {
     !isDesktopClient(request) &&
     request.url.startsWith('/mobile')
   ) {
-    const lan = getPreferredAddress()
+    const requestAddress = getRequestHostAddress(request)
+    const targetInterface = status.exposedInterfaces.find(
+      (entry) => entry.address === requestAddress,
+    )
+    const targetUrl = targetInterface?.httpsUrl ?? status.httpsUrl
     response.writeHead(307, {
-      location: `https://${lan.address}:${httpsPort}${request.url}`,
+      location: `${targetUrl}${request.url}`,
       'cache-control': 'no-store',
     })
     response.end()
@@ -205,21 +229,12 @@ function handleRequest(request, response) {
   }
 
   if (request.url.startsWith('/api/status')) {
-    sendJson(
-      response,
-      200,
-      createStatusPayload({
-        httpPort: port,
-        httpsPort,
-        httpsAvailable: httpsState.available,
-        httpsError: httpsState.error,
-      }),
-    )
+    sendJson(response, 200, status)
     return
   }
 
   if (request.url.startsWith('/api/pairing')) {
-    sendJson(response, 200, createPairingPayload())
+    sendJson(response, 200, createPairingPayload(config))
     return
   }
 
@@ -307,21 +322,13 @@ function handleRequest(request, response) {
   if (request.url.startsWith('/api/config')) {
     if (request.method === 'GET') {
       const url = new URL(request.url, `http://${request.headers.host}`)
-      readConfig()
-        .then((config) => {
-          if (!isDesktopClient(request) && !hasValidPairing(url, config)) {
-            sendJson(response, 403, { error: 'PAIRING_REQUIRED' })
-            return
-          }
 
-          sendJson(response, 200, { config })
-        })
-        .catch((error) =>
-          sendJson(response, 500, {
-            error: 'CONFIG_READ_FAILED',
-            message: error.message,
-          }),
-        )
+      if (!isDesktopClient(request) && !hasValidPairing(url, config)) {
+        sendJson(response, 403, { error: 'PAIRING_REQUIRED' })
+        return
+      }
+
+      sendJson(response, 200, { config })
       return
     }
 
@@ -348,6 +355,12 @@ function handleRequest(request, response) {
   })
 }
 
+function handleRequest(request, response) {
+  handleRequestAsync(request, response).catch((error) => {
+    sendJson(response, 500, { error: 'SERVER_ERROR', message: error.message })
+  })
+}
+
 export function createLocalServer() {
   return createHttpServer(handleRequest)
 }
@@ -366,13 +379,16 @@ function listen(server, listenPort, host) {
 
 export async function startLocalServer({ host = '0.0.0.0', silent = false } = {}) {
   const lan = getPreferredAddress()
+  const certificateAddresses = getLanInterfaces().map((entry) => entry.address)
   const server = createLocalServer()
   let httpsServer
 
   await listen(server, port, host)
 
   try {
-    const certificate = await ensureHttpsCertificate(lan.address)
+    const certificate = await ensureHttpsCertificate(
+      certificateAddresses.length > 0 ? certificateAddresses : [lan.address],
+    )
     httpsServer = createHttpsServer(certificate.options, handleRequest)
     await listen(httpsServer, httpsPort, host)
     httpsState = {
@@ -389,6 +405,14 @@ export async function startLocalServer({ host = '0.0.0.0', silent = false } = {}
     }
   }
 
+  const config = await readConfig()
+  const status = createStatusPayload({
+    httpPort: port,
+    httpsPort,
+    httpsAvailable: httpsState.available,
+    httpsError: httpsState.error,
+    networkExposure: config?.networkExposure,
+  })
   const payload = {
     server,
     httpServer: server,
@@ -396,10 +420,9 @@ export async function startLocalServer({ host = '0.0.0.0', silent = false } = {}
     port,
     httpsPort,
     desktopUrl: `http://127.0.0.1:${port}`,
-    networkUrl: httpsState.available
-      ? `https://${lan.address}:${httpsPort}`
-      : `http://${lan.address}:${port}`,
-    httpNetworkUrl: `http://${lan.address}:${port}`,
+    networkUrl: status.localUrl,
+    networkUrls: status.exposedUrls,
+    httpNetworkUrl: status.httpUrl,
     httpsAvailable: httpsState.available,
     httpsError: httpsState.error,
     certificatePath: httpsState.certificatePath,

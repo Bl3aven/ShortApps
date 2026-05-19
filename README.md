@@ -46,9 +46,26 @@ npm run serve:local
 La meme variable `SHORTAPPS_LOCAL_IP` peut etre utilisee avec `serve:local`.
 Le nom affiche sur le telephone peut aussi etre force avec `SHORTAPPS_PC_NAME`.
 
-`server/local-server.js` sert le build sur le port `56321`, expose `/api/status`
-et `/api/pairing`, detecte dynamiquement une IP privee du PC, puis refuse les
-clients qui ne sont pas sur un sous-reseau local connu.
+`server/local-server.js` sert le build sur le port `56321`, demarre le HTTPS
+mobile sur `56322`, expose `/api/status` et `/api/pairing`, detecte
+dynamiquement les IP privees du PC, puis refuse les clients qui ne sont pas sur
+un sous-reseau local autorise.
+
+Depuis la V4, le serveur ecoute sur `0.0.0.0` afin de pouvoir repondre sur
+toutes les interfaces actives de la machine. L'ecran Parametres permet ensuite
+de choisir :
+
+- `Toutes les IP` : toutes les interfaces LAN privees sont annoncees ;
+- `Selection` : seules les interfaces cochees sont annoncees et autorisees ;
+- l'interface primaire utilisee par l'adresse affichee et le QR Code.
+
+`/api/status` renvoie aussi `interfaces`, `exposedInterfaces`, `exposedUrls` et
+`networkExposure` pour que l'interface puisse afficher par exemple les URLs
+`192.168.51.81`, `192.168.0.55` ou `172.17.160.1` si Windows les expose.
+
+Le certificat HTTPS local est genere avec toutes les IP LAN detectees au
+demarrage. Si une nouvelle interface apparait apres le lancement de ShortApps,
+relancez l'application pour regenerer le certificat avec cette nouvelle IP.
 
 `/api/status` renvoie aussi le nom reel de la machine (`pcName`) ; l'en-tete du
 telephone dans l'interface utilise cette valeur.
@@ -78,10 +95,12 @@ applications de demonstration.
 telephone. Dans WSL/Linux, il repond aussi `WINDOWS_ONLY`; sur Windows, il passe
 par PowerShell `Start-Process`.
 
-## Notes d'integration Windows
+## Package Windows
 
-- Le front est pret a etre emballe dans Tauri + React.
-- Rust/Tauri ne sont pas installes dans cet environnement, donc le packaging
-  Windows n'est pas encore genere ici.
-- Pour une version Tauri finale, le scan Node actuel peut etre remplace par des
-  commandes Rust natives afin d'extraire les icones Windows et lancer les `.exe`.
+```bash
+npm run package:win
+```
+
+Le package Electron Windows est genere dans `release/ShortApps-win32-x64`. Les
+archives ZIP de version sont stockees localement dans `versioning/` et publiees
+comme assets GitHub Release, pas dans l'historique Git.

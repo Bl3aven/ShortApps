@@ -1827,6 +1827,97 @@
   font-size: 14px;
 }
 
+.network-settings {
+  display: grid;
+  gap: 12px;
+}
+
+.network-interface-list {
+  display: grid;
+  gap: 8px;
+}
+
+.network-interface-row {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 132px 86px 42px;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.58);
+}
+
+.network-interface-row.active {
+  border-color: rgba(18, 98, 255, 0.42);
+  background: rgba(239, 246, 255, 0.62);
+}
+
+.network-check {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+}
+
+.network-check input {
+  width: 16px;
+  height: 16px;
+  accent-color: #1262ff;
+}
+
+.network-check input:disabled {
+  cursor: not-allowed;
+}
+
+.network-check span {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.network-check strong,
+.network-check small,
+.network-interface-row code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.network-check strong {
+  color: #1f2937;
+  font-size: 13px;
+}
+
+.network-check small {
+  color: #64748b;
+  font-size: 12px;
+}
+
+.network-interface-row code {
+  padding: 6px 8px;
+  border-radius: 7px;
+  background: rgba(226, 232, 240, 0.62);
+  color: #273449;
+  font-size: 12px;
+}
+
+.compact-button.active {
+  border-color: rgba(18, 98, 255, 0.5);
+  background: #1262ff;
+  color: #fff;
+}
+
+.network-empty {
+  padding: 12px;
+  border: 1px dashed rgba(148, 163, 184, 0.42);
+  border-radius: 8px;
+  color: #64748b;
+  font-size: 13px;
+}
+
 .settings-side {
   display: grid;
   align-content: start;
