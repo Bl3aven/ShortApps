@@ -88,12 +88,23 @@ client non-localhost.
 - les chemins `.exe`, arguments, dossiers de travail et emplacements d'icones
   quand Windows les fournit.
 
+Depuis la V5, le scan extrait aussi les logos Windows disponibles sous forme de
+PNG base64 (`iconDataUrl`). L'interface les affiche automatiquement sur le
+dashboard et la webapp mobile. Si aucune icone exploitable n'est disponible,
+ShortApps conserve le rendu par initiales et degrade.
+
 Dans WSL/Linux, l'endpoint repond `WINDOWS_ONLY` et l'interface conserve les
 applications de demonstration.
 
 `/api/apps/launch` tente de lancer l'application demandee depuis la webapp
-telephone. Dans WSL/Linux, il repond aussi `WINDOWS_ONLY`; sur Windows, il passe
-par PowerShell `Start-Process`.
+telephone. Dans WSL/Linux, il repond aussi `WINDOWS_ONLY`. Sur Windows, les
+executables `.exe` valides sont lances directement via Node.js pour reduire la
+latence ; PowerShell reste utilise comme fallback et pour les cibles `shell:` ou
+web.
+
+`/api/keyboard` utilise un worker PowerShell persistant sur Windows afin de
+charger `user32.dll` une seule fois et d'envoyer les touches du pave numerique
+avec une latence beaucoup plus basse qu'un PowerShell lance a chaque appui.
 
 ## Package Windows
 

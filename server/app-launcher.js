@@ -5,34 +5,19 @@ function psQuote(value = '') {
   return `'${String(value).replace(/'/g, "''")}'`
 }
 
-export async function launchInstalledApp(app) {
-  if (process.platform !== 'win32') {
-    return {
-      launched: false,
-      platform: process.platform,
-      reason: 'WINDOWS_ONLY',
-    }
+function parseArgumentString(value = '') {
+  const args = []
+  const pattern = /"([^"]*)"|([^\s]+)/g
+  let match
+
+  while ((match = pattern.exec(value)) !== null) {
+    args.push(match[1] ?? match[2])
   }
 
-  const executable = String(app?.path ?? '').trim()
-  if (!executable) {
-    return {
-      launched: false,
-      platform: process.platform,
-      reason: 'MISSING_EXECUTABLE',
-    }
-  }
+  return args
+}
 
-  const validation = await validateAppTarget(app)
-  if (!validation.valid) {
-    return {
-      launched: false,
-      platform: process.platform,
-      reason: validation.reason,
-      validation,
-    }
-  }
-
+function runPowerShellStart(app, executable) {
   const command = [
     `$ErrorActionPreference = 'Stop'`,
     `$filePath = ${psQuote(executable)}`,
@@ -64,13 +49,67 @@ export async function launchInstalledApp(app) {
         return
       }
 
-      resolve({
-        launched: true,
-        platform: process.platform,
-        appId: app?.id,
-        name: app?.name,
-        validation,
-      })
+      resolve('powershell-start')
     })
   })
+}
+
+function launchExecutableDirect(app, executable) {
+  return new Promise((resolve, reject) => {
+    const workingDirectory = String(app?.workingDirectory ?? '').trim()
+    const child = spawn(executable, parseArgumentString(app?.arguments ?? ''), {
+      cwd: workingDirectory || undefined,
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false,
+    })
+
+    child.once('error', reject)
+    child.once('spawn', () => {
+      child.unref()
+      resolve('direct-exe')
+    })
+  })
+}
+
+export async function launchInstalledApp(app) {
+  if (process.platform !== 'win32') {
+    return {
+      launched: false,
+      platform: process.platform,
+      reason: 'WINDOWS_ONLY',
+    }
+  }
+
+  const executable = String(app?.path ?? '').trim()
+  if (!executable) {
+    return {
+      launched: false,
+      platform: process.platform,
+      reason: 'MISSING_EXECUTABLE',
+    }
+  }
+
+  const validation = await validateAppTarget(app)
+  if (!validation.valid) {
+    return {
+      launched: false,
+      platform: process.platform,
+      reason: validation.reason,
+      validation,
+    }
+  }
+
+  const transport = executable.toLowerCase().endsWith('.exe')
+    ? await launchExecutableDirect(app, executable).catch(() => runPowerShellStart(app, executable))
+    : await runPowerShellStart(app, executable)
+
+  return {
+    launched: true,
+    platform: process.platform,
+    appId: app?.id,
+    name: app?.name,
+    validation,
+    transport,
+  }
 }

@@ -19,7 +19,7 @@ import {
 import { scanInstalledApps } from './app-scanner.js'
 import { launchInstalledApp } from './app-launcher.js'
 import { validateAppCatalog, validateAppTarget } from './app-validator.js'
-import { sendKeyboardInput } from './keyboard-controller.js'
+import { sendKeyboardInput, warmKeyboardWorker } from './keyboard-controller.js'
 import { readConfig, writeConfig } from './config-store.js'
 import { ensureHttpsCertificate } from './https-cert.js'
 
@@ -384,6 +384,7 @@ export async function startLocalServer({ host = '0.0.0.0', silent = false } = {}
   let httpsServer
 
   await listen(server, port, host)
+  warmKeyboardWorker()
 
   try {
     const certificate = await ensureHttpsCertificate(

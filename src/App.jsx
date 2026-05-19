@@ -33,7 +33,7 @@ import {
 import './App.css'
 
 const DEFAULT_PC_NAME = 'ShortApps PC'
-const APP_VERSION = '4.0.0'
+const APP_VERSION = '5.0.0'
 const HTTPS_SERVER_PORT = 56322
 const PcNameContext = createContext(DEFAULT_PC_NAME)
 const DEFAULT_NETWORK_EXPOSURE = {
@@ -539,6 +539,8 @@ const mergeScannedApps = (currentCatalog, scannedApps) => {
         category: scannedApp.category,
         path: scannedApp.path,
         iconPath: scannedApp.iconPath,
+        iconDataUrl: scannedApp.iconDataUrl || nextCatalog[existingIndex].iconDataUrl || '',
+        iconSource: scannedApp.iconSource || nextCatalog[existingIndex].iconSource || '',
         workingDirectory: scannedApp.workingDirectory,
         arguments: scannedApp.arguments,
       }
@@ -2347,6 +2349,7 @@ function MobileWebApp({ pages, wallpaper, settings }) {
   const [activePageId, setActivePageId] = useState(visiblePages[0].id)
   const [launchingAppId, setLaunchingAppId] = useState('')
   const [pressedShortcutId, setPressedShortcutId] = useState('')
+  const pressedShortcutRef = useRef('')
   const [mobileMode, setMobileMode] = useState('dashboard')
   const [pressedKey, setPressedKey] = useState('')
 
@@ -2364,6 +2367,8 @@ function MobileWebApp({ pages, wallpaper, settings }) {
       const response = await fetch('/api/apps/launch', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
+        cache: 'no-store',
+        keepalive: true,
         body: JSON.stringify({ app, ...pairingParams }),
       })
       const result = await response.json().catch(() => null)
@@ -2379,6 +2384,8 @@ function MobileWebApp({ pages, wallpaper, settings }) {
     await fetch('/api/keyboard', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
+      cache: 'no-store',
+      keepalive: true,
       body: JSON.stringify({ key, action, ...pairingParams }),
     }).catch(() => {})
   }
@@ -2442,12 +2449,23 @@ function MobileWebApp({ pages, wallpaper, settings }) {
                         type="button"
                         onPointerDown={() => {
                           triggerHaptic(10)
+                          pressedShortcutRef.current = app.id
                           setPressedShortcutId(app.id)
                         }}
-                        onPointerUp={() => setPressedShortcutId('')}
-                        onPointerCancel={() => setPressedShortcutId('')}
-                        onPointerLeave={() => setPressedShortcutId('')}
-                        onClick={() => launchApp(app)}
+                        onPointerUp={() => {
+                          const shouldLaunch = pressedShortcutRef.current === app.id
+                          pressedShortcutRef.current = ''
+                          setPressedShortcutId('')
+                          if (shouldLaunch) launchApp(app)
+                        }}
+                        onPointerCancel={() => {
+                          pressedShortcutRef.current = ''
+                          setPressedShortcutId('')
+                        }}
+                        onPointerLeave={() => {
+                          pressedShortcutRef.current = ''
+                          setPressedShortcutId('')
+                        }}
                       >
                         <AppIcon app={app} phone />
                         <span>{app.name}</span>
@@ -2648,7 +2666,17 @@ function DashboardGrid({
 }
 
 function AppIcon({ app, small = false, phone = false }) {
-  const className = ['app-icon', small ? 'small' : '', phone ? 'phone' : '', app.visualType === 'text' ? 'text-mode' : '']
+  const hasIconImage =
+    app.visualType !== 'text' &&
+    typeof app.iconDataUrl === 'string' &&
+    app.iconDataUrl.startsWith('data:image/')
+  const className = [
+    'app-icon',
+    small ? 'small' : '',
+    phone ? 'phone' : '',
+    app.visualType === 'text' ? 'text-mode' : '',
+    hasIconImage ? 'image-mode' : '',
+  ]
     .filter(Boolean)
     .join(' ')
 
@@ -2661,7 +2689,11 @@ function AppIcon({ app, small = false, phone = false }) {
       }}
       aria-hidden="true"
     >
-      <span>{app.visualType === 'text' ? app.centralText || app.name[0] : app.mark}</span>
+      {hasIconImage ? (
+        <img src={app.iconDataUrl} alt="" loading="lazy" draggable="false" />
+      ) : (
+        <span>{app.visualType === 'text' ? app.centralText || app.name[0] : app.mark}</span>
+      )}
     </span>
   )
 }

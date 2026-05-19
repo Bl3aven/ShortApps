@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { isSuspiciousExecutablePath } from './app-validator.js'
 
-const SCAN_TIMEOUT_MS = 12000
+const SCAN_TIMEOUT_MS = 30000
 
 const colorPairs = [
   ['#2563eb', '#0f172a'],
@@ -63,6 +63,11 @@ function normalizeScannedApp(entry) {
     category: entry.category ?? 'Détectées',
     path: executable,
     iconPath: normalizeExecutablePath(entry.iconPath ?? executable),
+    iconDataUrl:
+      typeof entry.iconDataUrl === 'string' && entry.iconDataUrl.startsWith('data:image/')
+        ? entry.iconDataUrl
+        : '',
+    iconSource: entry.iconSource ?? '',
     workingDirectory: entry.workingDirectory ?? '',
     arguments: entry.arguments ?? '',
     mark: appMark(name),
@@ -114,24 +119,85 @@ function runPowerShell(script) {
 
 const windowsScanScript = String.raw`
 $ErrorActionPreference = "SilentlyContinue"
+Add-Type -AssemblyName System.Drawing
 $apps = New-Object System.Collections.Generic.List[object]
+$iconCache = @{}
 
 function Clean-ExePath($value) {
   if ([string]::IsNullOrWhiteSpace($value)) { return "" }
-  $clean = $value.Trim()
+  $clean = [Environment]::ExpandEnvironmentVariables($value.Trim())
   if ($clean.StartsWith('"')) {
     $secondQuote = $clean.IndexOf('"', 1)
     if ($secondQuote -gt 1) { return $clean.Substring(1, $secondQuote - 1) }
   }
   $exeIndex = $clean.ToLowerInvariant().IndexOf(".exe")
   if ($exeIndex -gt -1) { return $clean.Substring(0, $exeIndex + 4).Trim('"') }
-  return $clean.Trim('"')
+  $dllIndex = $clean.ToLowerInvariant().IndexOf(".dll")
+  if ($dllIndex -gt -1) { return $clean.Substring(0, $dllIndex + 4).Trim('"') }
+  $icoIndex = $clean.ToLowerInvariant().IndexOf(".ico")
+  if ($icoIndex -gt -1) { return $clean.Substring(0, $icoIndex + 4).Trim('"') }
+  return ($clean -replace ',\d+$', '').Trim('"')
 }
 
 function Test-BadExecutable($value) {
   if ([string]::IsNullOrWhiteSpace($value)) { return $true }
   $name = [IO.Path]::GetFileNameWithoutExtension($value)
   return $name -match '(?i)^(unins|uninstall|setup|install|updater?|update|crash|report|helper|service|redist|vcredist|mainten|repair|bootstrap)'
+}
+
+function Resolve-IconDataUrl($iconLocation, $executable) {
+  $candidate = Clean-ExePath $iconLocation
+  if (-not $candidate -or -not (Test-Path -LiteralPath $candidate)) {
+    $candidate = Clean-ExePath $executable
+  }
+
+  if (-not $candidate -or $candidate.StartsWith("shell:") -or -not (Test-Path -LiteralPath $candidate)) {
+    return [pscustomobject]@{
+      dataUrl = ""
+      source = ""
+    }
+  }
+
+  $cacheKey = $candidate.ToLowerInvariant()
+  if ($iconCache.ContainsKey($cacheKey)) { return $iconCache[$cacheKey] }
+
+  $result = [pscustomobject]@{
+    dataUrl = ""
+    source = $candidate
+  }
+
+  try {
+    $icon = $null
+    if ($candidate.ToLowerInvariant().EndsWith(".ico")) {
+      $icon = New-Object System.Drawing.Icon($candidate)
+    } else {
+      $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($candidate)
+    }
+
+    if ($icon) {
+      $bitmap = $icon.ToBitmap()
+      $target = New-Object System.Drawing.Bitmap 96, 96
+      $graphics = [System.Drawing.Graphics]::FromImage($target)
+      $graphics.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+      $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
+      $graphics.Clear([System.Drawing.Color]::Transparent)
+      $graphics.DrawImage($bitmap, 0, 0, 96, 96)
+      $stream = New-Object System.IO.MemoryStream
+      $target.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+      $result.dataUrl = "data:image/png;base64," + [Convert]::ToBase64String($stream.ToArray())
+
+      $stream.Dispose()
+      $graphics.Dispose()
+      $target.Dispose()
+      $bitmap.Dispose()
+      $icon.Dispose()
+    }
+  } catch {
+    $result.dataUrl = ""
+  }
+
+  $iconCache[$cacheKey] = $result
+  return $result
 }
 
 function Resolve-AppExecutable($displayName, $installLocation, $candidate) {
@@ -192,12 +258,15 @@ foreach ($folder in $shortcutFolders) {
     $shortcut = $shell.CreateShortcut($_.FullName)
     $target = Clean-ExePath $shortcut.TargetPath
     if ($target -and ($target.EndsWith(".exe") -or $target.StartsWith("shell:"))) {
+      $iconPayload = Resolve-IconDataUrl $shortcut.IconLocation $target
       $apps.Add([pscustomobject]@{
         name = [IO.Path]::GetFileNameWithoutExtension($_.Name)
         executable = $target
         arguments = $shortcut.Arguments
         workingDirectory = $shortcut.WorkingDirectory
         iconPath = Clean-ExePath $shortcut.IconLocation
+        iconDataUrl = $iconPayload.dataUrl
+        iconSource = $iconPayload.source
         source = "Raccourci"
         category = "Raccourcis"
       })
@@ -215,12 +284,15 @@ foreach ($path in $registryPaths) {
   Get-ItemProperty $path | Where-Object { $_.DisplayName } | ForEach-Object {
     $candidate = Resolve-AppExecutable $_.DisplayName $_.InstallLocation $_.DisplayIcon
     if ($candidate -and ($candidate.EndsWith(".exe") -or $candidate.StartsWith("shell:"))) {
+      $iconPayload = Resolve-IconDataUrl $_.DisplayIcon $candidate
       $apps.Add([pscustomobject]@{
         name = $_.DisplayName
         executable = $candidate
         arguments = ""
         workingDirectory = $_.InstallLocation
         iconPath = $candidate
+        iconDataUrl = $iconPayload.dataUrl
+        iconSource = $iconPayload.source
         source = "Registre"
         category = "Détectées"
       })
