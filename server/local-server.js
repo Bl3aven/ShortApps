@@ -2,14 +2,13 @@ import { createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { createServer as createHttpServer } from 'node:http'
 import { createServer as createHttpsServer } from 'node:https'
-import { randomUUID } from 'node:crypto'
+import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { dirname, extname, join, normalize, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   createStatusPayload,
   getExposedInterfaces,
   getLanInterfaces,
-  getPcName,
   getPreferredAddress,
   HTTPS_SERVER_PORT,
   isSameSubnet,
@@ -28,6 +27,8 @@ const projectRoot = resolve(__dirname, '..')
 const distDir = join(projectRoot, 'dist')
 const port = SERVER_PORT
 const httpsPort = HTTPS_SERVER_PORT
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000
+const sessions = new Map()
 let httpsState = {
   available: false,
   error: '',
@@ -56,7 +57,15 @@ function isAllowedLocalClient(request, config) {
 }
 
 function isDesktopClient(request) {
-  return normalizeRemoteAddress(request.socket.remoteAddress) === '127.0.0.1'
+  const clientIp = normalizeRemoteAddress(request.socket.remoteAddress)
+  const host = getRequestHostAddress(request)
+  const userAgent = request.headers['user-agent'] ?? ''
+
+  return (
+    clientIp === '127.0.0.1' &&
+    (host === '127.0.0.1' || host === 'localhost') &&
+    userAgent.includes('Electron')
+  )
 }
 
 function getRequestHostAddress(request) {
@@ -71,6 +80,77 @@ function sendJson(response, statusCode, payload) {
     'cache-control': 'no-store',
   })
   response.end(JSON.stringify(payload))
+}
+
+function createPublicConfig(config) {
+  const publicConfig = { ...(config ?? {}) }
+  delete publicConfig.auth
+  delete publicConfig.pairing
+
+  return publicConfig
+}
+
+function isPasswordConfigured(config) {
+  return Boolean(config?.auth?.passwordHash?.salt && config?.auth?.passwordHash?.hash)
+}
+
+function createPasswordHash(password) {
+  const salt = randomBytes(16).toString('hex')
+  const hash = scryptSync(password, salt, 64).toString('hex')
+
+  return {
+    algorithm: 'scrypt',
+    salt,
+    hash,
+    keyLength: 64,
+  }
+}
+
+function verifyPassword(password, passwordHash) {
+  if (!password || !passwordHash?.salt || !passwordHash?.hash) return false
+
+  try {
+    const expected = Buffer.from(passwordHash.hash, 'hex')
+    const actual = scryptSync(password, passwordHash.salt, expected.length)
+    return expected.length === actual.length && timingSafeEqual(expected, actual)
+  } catch {
+    return false
+  }
+}
+
+function cleanupSessions() {
+  const now = Date.now()
+  sessions.forEach((session, token) => {
+    if (session.expiresAt <= now) sessions.delete(token)
+  })
+}
+
+function createSession() {
+  cleanupSessions()
+  const token = `sa_${randomBytes(32).toString('base64url')}`
+  const expiresAt = Date.now() + SESSION_TTL_MS
+  sessions.set(token, { expiresAt })
+
+  return {
+    token,
+    expiresAt: new Date(expiresAt).toISOString(),
+  }
+}
+
+function getRequestAuthToken(request, payload = {}) {
+  const directToken = request.headers['x-shortapps-auth']
+  if (typeof directToken === 'string' && directToken) return directToken
+
+  const authorization = request.headers.authorization ?? ''
+  if (authorization.startsWith('Bearer ')) return authorization.slice(7)
+
+  return payload.authToken ?? ''
+}
+
+function hasValidSessionToken(token) {
+  cleanupSessions()
+  const session = sessions.get(token)
+  return Boolean(session && session.expiresAt > Date.now())
 }
 
 function readJsonBody(request) {
@@ -95,63 +175,18 @@ function readJsonBody(request) {
   })
 }
 
-function createPairingPayload(config) {
-  const status = createStatusPayload({
-    httpPort: port,
-    httpsPort,
-    httpsAvailable: httpsState.available,
-    httpsError: httpsState.error,
-    networkExposure: config?.networkExposure,
-  })
-  const code = `SHA-${Math.floor(1000 + Math.random() * 9000)}`
-
-  return {
-    app: 'ShortApps',
-    version: 1,
-    type: 'pair-device',
-    pcName: getPcName(),
-    localIp: status.localIp,
-    localUrl: status.localUrl,
-    interfaces: status.exposedInterfaces,
-    urls: status.exposedUrls,
-    httpsAvailable: httpsState.available,
-    httpsError: httpsState.error,
-    localOnly: true,
-    token: `pair_${randomUUID()}`,
-    code,
-    expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-  }
-}
-
-function hasValidPairing(url, config) {
-  const pairing = config?.pairing
-  if (!pairing?.token || !pairing?.code) return true
-
-  const tokenMatches = url.searchParams.get('pair') === pairing.token
-  const codeMatches = url.searchParams.get('code') === pairing.code
-
-  return tokenMatches && codeMatches
-}
-
-function hasValidPairingPayload(url, payload, config) {
-  const pairing = config?.pairing
-  if (!pairing?.token || !pairing?.code) return true
-
-  const token = payload?.pair ?? payload?.pairing?.token ?? url.searchParams.get('pair')
-  const code = payload?.code ?? payload?.pairing?.code ?? url.searchParams.get('code')
-
-  return token === pairing.token && code === pairing.code
-}
-
-async function assertAuthorizedCommand(request, payload) {
-  if (isDesktopClient(request)) return
-
-  const url = new URL(request.url, `http://${request.headers.host}`)
+async function assertAuthenticatedRequest(request, payload = {}) {
   const config = await readConfig()
 
-  if (!hasValidPairingPayload(url, payload, config)) {
-    const error = new Error('PAIRING_REQUIRED')
-    error.statusCode = 403
+  if (!isPasswordConfigured(config)) {
+    const error = new Error('PASSWORD_NOT_CONFIGURED')
+    error.statusCode = 409
+    throw error
+  }
+
+  if (!hasValidSessionToken(getRequestAuthToken(request, payload))) {
+    const error = new Error('AUTH_REQUIRED')
+    error.statusCode = 401
     throw error
   }
 }
@@ -160,15 +195,6 @@ async function serveStatic(request, response) {
   const url = new URL(request.url, `http://${request.headers.host}`)
   let pathname = decodeURIComponent(url.pathname)
   if (pathname === '/') pathname = '/index.html'
-
-  if (pathname.startsWith('/mobile') && !isDesktopClient(request)) {
-    const config = await readConfig()
-    if (!hasValidPairing(url, config)) {
-      response.writeHead(403)
-      response.end('Pairing required')
-      return
-    }
-  }
 
   const normalizedPath = normalize(pathname).replace(/^(\.\.[/\\])+/, '')
   let filePath = resolve(join(distDir, normalizedPath))
@@ -219,13 +245,14 @@ async function handleRequestAsync(request, response) {
     const targetInterface = status.exposedInterfaces.find(
       (entry) => entry.address === requestAddress,
     )
-    const targetUrl = targetInterface?.httpsUrl ?? status.httpsUrl
-    response.writeHead(307, {
-      location: `${targetUrl}${request.url}`,
-      'cache-control': 'no-store',
-    })
-    response.end()
-    return
+    if (targetInterface) {
+      response.writeHead(307, {
+        location: `${targetInterface.httpsUrl}${request.url}`,
+        'cache-control': 'no-store',
+      })
+      response.end()
+      return
+    }
   }
 
   if (request.url.startsWith('/api/status')) {
@@ -233,12 +260,99 @@ async function handleRequestAsync(request, response) {
     return
   }
 
-  if (request.url.startsWith('/api/pairing')) {
-    sendJson(response, 200, createPairingPayload(config))
+  if (request.url.startsWith('/api/auth/status')) {
+    const configured = isPasswordConfigured(config)
+    const authToken = getRequestAuthToken(request)
+    const session = sessions.get(authToken)
+    const authenticated = isDesktopClient(request) || hasValidSessionToken(authToken)
+    sendJson(response, 200, {
+      configured,
+      authenticated,
+      expiresAt: session && authenticated ? new Date(session.expiresAt).toISOString() : null,
+    })
+    return
+  }
+
+  if (request.url.startsWith('/api/auth/setup')) {
+    if (request.method !== 'POST') {
+      sendJson(response, 405, { error: 'METHOD_NOT_ALLOWED' })
+      return
+    }
+
+    if (!isDesktopClient(request)) {
+      sendJson(response, 403, { saved: false, error: 'DESKTOP_CONSOLE_REQUIRED' })
+      return
+    }
+
+    readJsonBody(request)
+      .then(async (payload) => {
+        const password = String(payload.password ?? '')
+        if (password.length < 6) {
+          const error = new Error('PASSWORD_TOO_SHORT')
+          error.statusCode = 400
+          throw error
+        }
+
+        const nextConfig = {
+          ...(config ?? {}),
+          auth: {
+            version: 1,
+            passwordHash: createPasswordHash(password),
+            updatedAt: new Date().toISOString(),
+          },
+        }
+        delete nextConfig.pairing
+        sessions.clear()
+        await writeConfig(nextConfig)
+      })
+      .then(() => sendJson(response, 200, { saved: true }))
+      .catch((error) =>
+        sendJson(response, error.statusCode ?? 500, {
+          saved: false,
+          error: error.message,
+        }),
+      )
+    return
+  }
+
+  if (request.url.startsWith('/api/auth/login')) {
+    if (request.method !== 'POST') {
+      sendJson(response, 405, { error: 'METHOD_NOT_ALLOWED' })
+      return
+    }
+
+    readJsonBody(request)
+      .then((payload) => {
+        if (!isPasswordConfigured(config)) {
+          const error = new Error('PASSWORD_NOT_CONFIGURED')
+          error.statusCode = 409
+          throw error
+        }
+
+        if (!verifyPassword(String(payload.password ?? ''), config.auth.passwordHash)) {
+          const error = new Error('INVALID_PASSWORD')
+          error.statusCode = 401
+          throw error
+        }
+
+        return createSession()
+      })
+      .then((session) => sendJson(response, 200, { authenticated: true, ...session }))
+      .catch((error) =>
+        sendJson(response, error.statusCode ?? 500, {
+          authenticated: false,
+          error: error.message,
+        }),
+      )
     return
   }
 
   if (request.url.startsWith('/api/apps/scan')) {
+    if (!isDesktopClient(request)) {
+      sendJson(response, 403, { dynamic: false, error: 'DESKTOP_CONSOLE_REQUIRED', apps: [] })
+      return
+    }
+
     scanInstalledApps()
       .then((payload) => sendJson(response, 200, payload))
       .catch((error) =>
@@ -260,14 +374,14 @@ async function handleRequestAsync(request, response) {
 
     readJsonBody(request)
       .then(async (payload) => {
-        await assertAuthorizedCommand(request, payload)
+        await assertAuthenticatedRequest(request, payload)
         return launchInstalledApp(payload.app)
       })
       .then((payload) => sendJson(response, 200, payload))
       .catch((error) =>
         sendJson(response, error.statusCode ?? 500, {
           launched: false,
-          error: error.statusCode === 403 ? 'PAIRING_REQUIRED' : 'APP_LAUNCH_FAILED',
+          error: error.statusCode === 401 || error.statusCode === 409 ? error.message : 'APP_LAUNCH_FAILED',
           message: error.message,
         }),
       )
@@ -277,6 +391,11 @@ async function handleRequestAsync(request, response) {
   if (request.url.startsWith('/api/apps/validate')) {
     if (request.method !== 'POST') {
       sendJson(response, 405, { error: 'METHOD_NOT_ALLOWED' })
+      return
+    }
+
+    if (!isDesktopClient(request)) {
+      sendJson(response, 403, { validated: false, error: 'DESKTOP_CONSOLE_REQUIRED' })
       return
     }
 
@@ -305,14 +424,14 @@ async function handleRequestAsync(request, response) {
 
     readJsonBody(request)
       .then(async (payload) => {
-        await assertAuthorizedCommand(request, payload)
+        await assertAuthenticatedRequest(request, payload)
         return sendKeyboardInput({ key: payload.key, action: payload.action })
       })
       .then((payload) => sendJson(response, 200, payload))
       .catch((error) =>
         sendJson(response, error.statusCode ?? 500, {
           sent: false,
-          error: error.statusCode === 403 ? 'PAIRING_REQUIRED' : 'KEYBOARD_SEND_FAILED',
+          error: error.statusCode === 401 || error.statusCode === 409 ? error.message : 'KEYBOARD_SEND_FAILED',
           message: error.message,
         }),
       )
@@ -321,20 +440,35 @@ async function handleRequestAsync(request, response) {
 
   if (request.url.startsWith('/api/config')) {
     if (request.method === 'GET') {
-      const url = new URL(request.url, `http://${request.headers.host}`)
-
-      if (!isDesktopClient(request) && !hasValidPairing(url, config)) {
-        sendJson(response, 403, { error: 'PAIRING_REQUIRED' })
-        return
+      if (!isDesktopClient(request)) {
+        try {
+          await assertAuthenticatedRequest(request)
+        } catch (error) {
+          sendJson(response, error.statusCode ?? 401, { error: error.message })
+          return
+        }
       }
 
-      sendJson(response, 200, { config })
+      sendJson(response, 200, { config: createPublicConfig(config) })
       return
     }
 
     if (request.method === 'PUT') {
+      if (!isDesktopClient(request)) {
+        sendJson(response, 403, { saved: false, error: 'DESKTOP_CONSOLE_REQUIRED' })
+        return
+      }
+
       readJsonBody(request)
-        .then((payload) => writeConfig(payload.config ?? {}))
+        .then((payload) => {
+          const nextConfig = {
+            ...(config ?? {}),
+            ...(payload.config ?? {}),
+            auth: config?.auth,
+          }
+          delete nextConfig.pairing
+          return writeConfig(nextConfig)
+        })
         .then(() => sendJson(response, 200, { saved: true }))
         .catch((error) =>
           sendJson(response, 500, {

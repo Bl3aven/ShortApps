@@ -1,7 +1,7 @@
 {
   "name": "shortapps",
   "private": true,
-  "version": "1.6.0",
+  "version": "1.7.0",
   "type": "module",
   "main": "electron/main.js",
   "scripts": {
@@ -18,7 +18,6 @@
   },
   "dependencies": {
     "lucide-react": "^1.16.0",
-    "qrcode": "^1.5.4",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"
   },

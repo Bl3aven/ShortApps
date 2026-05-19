@@ -1,5 +1,4 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import QRCode from 'qrcode'
 import {
   AppWindow,
   Check,
@@ -17,7 +16,6 @@ import {
   Monitor,
   Network,
   Plus,
-  QrCode,
   RefreshCcw,
   RefreshCw,
   RotateCw,
@@ -33,7 +31,7 @@ import {
 import './App.css'
 
 const DEFAULT_PC_NAME = 'ShortApps PC'
-const APP_VERSION = '1.6.0'
+const APP_VERSION = '1.7.0'
 const HTTPS_SERVER_PORT = 56322
 const PcNameContext = createContext(DEFAULT_PC_NAME)
 const DEFAULT_NETWORK_EXPOSURE = {
@@ -387,20 +385,6 @@ const WALLPAPERS = [
   },
 ]
 
-const createPairingToken = () => {
-  const code = `SHA-${Math.floor(1000 + Math.random() * 9000)}`
-  const randomPart =
-    typeof crypto !== 'undefined' && crypto.randomUUID
-      ? crypto.randomUUID()
-      : Math.random().toString(36).slice(2)
-
-  return {
-    code,
-    token: `pair_${randomPart}`,
-    expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-  }
-}
-
 const getLocalServer = () => {
   const hostname = typeof window !== 'undefined' ? window.location.hostname : ''
   const configuredIp = import.meta.env.VITE_SHORTAPPS_LOCAL_IP
@@ -472,6 +456,16 @@ const triggerHaptic = (duration = 12) => {
   }
 
   return false
+}
+
+const getStoredAuthToken = () => {
+  if (typeof window === 'undefined') return ''
+  return window.localStorage.getItem('shortapps.authToken') ?? ''
+}
+
+const createAuthHeaders = () => {
+  const authToken = getStoredAuthToken()
+  return authToken ? { 'x-shortapps-auth': authToken } : {}
 }
 
 const mergeScannedApps = (currentCatalog, scannedApps) => {
@@ -547,8 +541,6 @@ function App() {
     darken: 25,
     fit: 'Remplir',
   })
-  const [pairing, setPairing] = useState(() => createPairingToken())
-  const [qrSrc, setQrSrc] = useState('')
   const [phoneMode, setPhoneMode] = useState('landscape')
   const [appSearch, setAppSearch] = useState('')
   const [wallpaperSearch, setWallpaperSearch] = useState('')
@@ -570,14 +562,10 @@ function App() {
     WALLPAPERS.find((wallpaper) => wallpaper.id === selectedWallpaperId) ?? WALLPAPERS[0]
   const publicMobileBaseUrl = normalizePublicAccessUrl(publicAccessUrl)
   const mobileUrl = useMemo(() => {
-    const params = new URLSearchParams({
-      pair: pairing.token,
-      code: pairing.code,
-    })
     const mobileBaseUrl = publicMobileBaseUrl || localServer.url
 
-    return `${mobileBaseUrl}/mobile?${params.toString()}`
-  }, [localServer.url, pairing.code, pairing.token, publicMobileBaseUrl])
+    return `${mobileBaseUrl}/mobile`
+  }, [localServer.url, publicMobileBaseUrl])
 
   const updateNetworkExposure = useCallback((nextExposure) => {
     setNetworkExposure((currentExposure) => {
@@ -611,19 +599,6 @@ function App() {
       })
   }, [updateNetworkExposure])
 
-  useEffect(() => {
-    const payload = {
-      url: mobileUrl,
-    }
-
-    QRCode.toDataURL(payload.url, {
-      errorCorrectionLevel: 'M',
-      margin: 1,
-      width: 220,
-      color: { dark: '#0f172a', light: '#ffffff' },
-    }).then(setQrSrc)
-  }, [mobileUrl])
-
   const appsById = useMemo(() => {
     return catalog.reduce((acc, app) => {
       acc[app.id] = app
@@ -637,7 +612,9 @@ function App() {
       ? `/api/config${window.location.search}`
       : '/api/config'
 
-    fetch(configUrl)
+    fetch(configUrl, {
+      headers: isMobileWebApp ? createAuthHeaders() : {},
+    })
       .then((response) => {
         if (!response.ok) return null
         return response.json()
@@ -651,7 +628,6 @@ function App() {
           if (Array.isArray(config.pages)) setPages(config.pages)
           if (config.selectedWallpaperId) setSelectedWallpaperId(config.selectedWallpaperId)
           if (config.wallpaperSettings) setWallpaperSettings(config.wallpaperSettings)
-          if (config.pairing?.token && config.pairing?.code) setPairing(config.pairing)
           if (config.networkExposure) updateNetworkExposure(config.networkExposure)
           if (typeof config.publicAccessUrl === 'string') setPublicAccessUrl(config.publicAccessUrl)
         }
@@ -692,7 +668,6 @@ function App() {
             pages,
             selectedWallpaperId,
             wallpaperSettings,
-            pairing,
             networkExposure,
             publicAccessUrl,
           },
@@ -706,7 +681,6 @@ function App() {
     configReady,
     networkExposure,
     pages,
-    pairing,
     publicAccessUrl,
     selectedWallpaperId,
     wallpaperSettings,
@@ -1039,12 +1013,9 @@ function App() {
           pageApps={pageApps}
           pages={pages}
           serverStatus={serverStatus}
-          pairing={pairing}
-          qrSrc={qrSrc}
           mobileUrl={mobileUrl}
           publicAccessUrl={publicAccessUrl}
           setPublicAccessUrl={setPublicAccessUrl}
-          regeneratePairing={() => setPairing(createPairingToken())}
           networkExposure={networkExposure}
           setNetworkExposure={updateNetworkExposure}
         />
@@ -1826,12 +1797,9 @@ function SettingsView({
   pageApps,
   pages,
   serverStatus,
-  pairing,
-  qrSrc,
   mobileUrl,
   publicAccessUrl,
   setPublicAccessUrl,
-  regeneratePairing,
   networkExposure,
   setNetworkExposure,
 }) {
@@ -1852,6 +1820,49 @@ function SettingsView({
   const displayedExposedCount = exposedInterfaces.length || networkInterfaces.length
   const normalizedPublicUrl = normalizePublicAccessUrl(publicAccessUrl)
   const publicUrlIsInvalid = publicAccessUrl.trim() !== '' && !normalizedPublicUrl
+  const [authStatus, setAuthStatus] = useState({ configured: false })
+  const [password, setPassword] = useState('')
+  const [passwordConfirm, setPasswordConfirm] = useState('')
+  const [passwordSaveState, setPasswordSaveState] = useState('idle')
+
+  const refreshAuthStatus = useCallback(() => {
+    fetch('/api/auth/status')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload) => {
+        if (payload) setAuthStatus(payload)
+      })
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    refreshAuthStatus()
+  }, [refreshAuthStatus])
+
+  const savePassword = async () => {
+    if (password.length < 6 || password !== passwordConfirm) {
+      setPasswordSaveState('invalid')
+      return
+    }
+
+    setPasswordSaveState('saving')
+
+    try {
+      const response = await fetch('/api/auth/setup', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ password }),
+      })
+      if (!response.ok) throw new Error('PASSWORD_SAVE_FAILED')
+
+      setPassword('')
+      setPasswordConfirm('')
+      setPasswordSaveState('saved')
+      refreshAuthStatus()
+      window.setTimeout(() => setPasswordSaveState('idle'), 2400)
+    } catch {
+      setPasswordSaveState('failed')
+    }
+  }
 
   const setExposureMode = (mode) => {
     setNetworkExposure((currentExposure) => {
@@ -1999,7 +2010,7 @@ function SettingsView({
                     type="button"
                     onClick={() => setPrimaryInterface(entry.id)}
                   >
-                    {isPrimary ? 'QR' : 'Utiliser'}
+                    {isPrimary ? 'Mobile' : 'Utiliser'}
                   </button>
 
                   <a
@@ -2024,12 +2035,12 @@ function SettingsView({
           </div>
         </div>
 
-        <DividerTitle icon={Lock} title="Accès mobile HTTPS" />
-        <Field label="URL HTTPS publique ou domaine LAN">
+        <DividerTitle icon={Lock} title="Accès mobile Tailscale" />
+        <Field label="URL mobile HTTPS">
           <input
             value={publicAccessUrl}
             onChange={(event) => setPublicAccessUrl(event.target.value)}
-            placeholder="https://shortapps.example.com"
+            placeholder="https://moodbeast.tailnet-name.ts.net"
           />
         </Field>
 
@@ -2038,39 +2049,77 @@ function SettingsView({
           <span>
             {publicUrlIsInvalid
               ? "L'URL mobile doit commencer par https:// pour etre utilisee par iOS."
-              : "Vide, le QR utilise l'adresse locale HTTPS du PC. Renseignee, cette URL remplace l'adresse locale dans le QR Code."}
+              : "Utilisez ici l'URL HTTPS fournie par Tailscale Serve. Vide, ShortApps utilise l'adresse HTTPS locale du PC."}
           </span>
         </div>
 
-        <section className="pairing-panel compact-pairing">
-          <h2>QR Code mobile</h2>
-          <div className="pairing-content">
-            <div className="qr-box">
-              {qrSrc ? <img src={qrSrc} alt="QR Code d'appairage ShortApps" /> : <QrCode size={96} />}
-            </div>
-            <div className="pairing-copy">
-              <p>Scannez ce QR Code depuis l'iPhone. Il ouvre directement la webapp mobile avec le jeton actif.</p>
-              <div className="pair-code">
-                Code : <strong>{pairing.code}</strong>
-              </div>
-              <span>{normalizedPublicUrl ? 'URL HTTPS personnalisee' : 'URL locale HTTPS du PC'}</span>
-              <div className="button-row">
-                <button className="soft-button" type="button" onClick={regeneratePairing}>
-                  <RefreshCw size={16} />
-                  Regenerer
-                </button>
-                <button
-                  className="soft-button"
-                  type="button"
-                  onClick={() => navigator.clipboard?.writeText(mobileUrl)}
-                >
-                  <Link size={16} />
-                  Copier le lien
-                </button>
-              </div>
-            </div>
+        <div className="mobile-link-panel">
+          <code>{mobileUrl}</code>
+          <div className="button-row">
+            <a className="soft-button" href={mobileUrl} target="_blank" rel="noreferrer">
+              <ExternalLink size={16} />
+              Ouvrir
+            </a>
+            <button
+              className="soft-button"
+              type="button"
+              onClick={() => navigator.clipboard?.writeText(mobileUrl)}
+            >
+              <Link size={16} />
+              Copier le lien
+            </button>
           </div>
-        </section>
+        </div>
+
+        <DividerTitle icon={Lock} title="Mot de passe mobile" />
+        <div className="password-settings">
+          <div className="inline-info">
+            <Info size={17} />
+            <span>
+              {authStatus.configured
+                ? 'Un mot de passe est configure. Les telephones doivent le saisir pour charger le dashboard et envoyer des actions.'
+                : "Aucun mot de passe n'est configure. Definissez-le ici avant d'utiliser la webapp mobile."}
+            </span>
+          </div>
+          <div className="password-grid">
+            <Field label="Nouveau mot de passe">
+              <input
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                placeholder="Minimum 6 caracteres"
+              />
+            </Field>
+            <Field label="Confirmation">
+              <input
+                type="password"
+                value={passwordConfirm}
+                onChange={(event) => setPasswordConfirm(event.target.value)}
+                placeholder="Repetez le mot de passe"
+              />
+            </Field>
+          </div>
+          {passwordSaveState === 'invalid' && (
+            <div className="inline-info validation-warning">
+              <Info size={17} />
+              <span>Le mot de passe doit contenir au moins 6 caracteres et correspondre a la confirmation.</span>
+            </div>
+          )}
+          {passwordSaveState === 'failed' && (
+            <div className="inline-info validation-warning">
+              <Info size={17} />
+              <span>Impossible d'enregistrer le mot de passe depuis cette session.</span>
+            </div>
+          )}
+          <button className="primary-button full-width" type="button" onClick={savePassword}>
+            <Lock size={16} />
+            {passwordSaveState === 'saving'
+              ? 'Enregistrement...'
+              : passwordSaveState === 'saved'
+                ? 'Mot de passe enregistre'
+                : 'Enregistrer le mot de passe'}
+          </button>
+        </div>
       </section>
 
       <aside className="settings-side">
@@ -2081,10 +2130,11 @@ function SettingsView({
               ['Serveur local', isOnline ? 'En ligne' : 'Hors ligne'],
               ['IP primaire', localServer.ip],
               ['Interfaces exposées', `${displayedExposedCount}/${networkInterfaces.length}`],
-              ['URL mobile', normalizedPublicUrl ? 'HTTPS externe' : 'HTTPS local'],
+              ['URL mobile', normalizedPublicUrl ? 'Tailscale HTTPS' : 'HTTPS local'],
+              ['Mot de passe', authStatus.configured ? 'Configuré' : 'À définir'],
               ['Version', APP_VERSION],
             ]}
-            icons={[Network, Server, Network, QrCode, Info]}
+            icons={[Network, Server, Network, Lock, Info, Info]}
           />
         </section>
         <section className="panel system-card">
@@ -2110,13 +2160,6 @@ function SettingsView({
 
 function MobileWebApp({ pages, wallpaper, settings }) {
   const pcName = useContext(PcNameContext)
-  const pairingParams = useMemo(() => {
-    const searchParams = new URLSearchParams(window.location.search)
-    return {
-      pair: searchParams.get('pair') ?? '',
-      code: searchParams.get('code') ?? '',
-    }
-  }, [])
   const visiblePages = pages.length
     ? pages
     : [{ id: 'empty', name: 'Accueil', order: 1, apps: [] }]
@@ -2126,6 +2169,49 @@ function MobileWebApp({ pages, wallpaper, settings }) {
   const pressedShortcutRef = useRef('')
   const [mobileMode, setMobileMode] = useState('dashboard')
   const [pressedKey, setPressedKey] = useState('')
+  const [authState, setAuthState] = useState('checking')
+  const [authPassword, setAuthPassword] = useState('')
+  const [authError, setAuthError] = useState('')
+
+  useEffect(() => {
+    fetch('/api/auth/status', {
+      headers: createAuthHeaders(),
+      cache: 'no-store',
+    })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload) => {
+        if (!payload?.configured) {
+          setAuthState('setup-required')
+          return
+        }
+
+        setAuthState(payload.authenticated ? 'authenticated' : 'locked')
+      })
+      .catch(() => setAuthState('locked'))
+  }, [])
+
+  const login = async (event) => {
+    event.preventDefault()
+    setAuthError('')
+
+    try {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({ password: authPassword }),
+      })
+      const payload = await response.json().catch(() => null)
+      if (!response.ok || !payload?.token) throw new Error(payload?.error ?? 'AUTH_FAILED')
+
+      window.localStorage.setItem('shortapps.authToken', payload.token)
+      triggerHaptic(12)
+      window.location.reload()
+    } catch {
+      setAuthError('Mot de passe incorrect ou serveur indisponible.')
+      triggerHaptic(35)
+    }
+  }
 
   const handleScroll = (event) => {
     const pageWidth = event.currentTarget.clientWidth
@@ -2140,10 +2226,10 @@ function MobileWebApp({ pages, wallpaper, settings }) {
     try {
       const response = await fetch('/api/apps/launch', {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: { 'content-type': 'application/json', ...createAuthHeaders() },
         cache: 'no-store',
         keepalive: true,
-        body: JSON.stringify({ app, ...pairingParams }),
+        body: JSON.stringify({ app }),
       })
       const result = await response.json().catch(() => null)
       if (!response.ok || result?.launched === false) throw new Error(result?.reason ?? 'APP_LAUNCH_FAILED')
@@ -2157,10 +2243,10 @@ function MobileWebApp({ pages, wallpaper, settings }) {
   const sendKey = async (key, action) => {
     await fetch('/api/keyboard', {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...createAuthHeaders() },
       cache: 'no-store',
       keepalive: true,
-      body: JSON.stringify({ key, action, ...pairingParams }),
+      body: JSON.stringify({ key, action }),
     }).catch(() => {})
   }
 
@@ -2203,7 +2289,34 @@ function MobileWebApp({ pages, wallpaper, settings }) {
         </button>
       </header>
 
-      {mobileMode === 'dashboard' ? (
+      {authState !== 'authenticated' && (
+        <section className="mobile-auth-panel">
+          <div className="mobile-auth-card">
+            <Lock size={38} />
+            <h1>ShortApps</h1>
+            {authState === 'setup-required' ? (
+              <p>Configurez le mot de passe depuis l'application Windows avant d'ouvrir le dashboard mobile.</p>
+            ) : (
+              <form onSubmit={login}>
+                <label>
+                  Mot de passe
+                  <input
+                    type="password"
+                    value={authPassword}
+                    autoComplete="current-password"
+                    onChange={(event) => setAuthPassword(event.target.value)}
+                    placeholder="Mot de passe ShortApps"
+                  />
+                </label>
+                {authError && <span>{authError}</span>}
+                <button type="submit">Ouvrir le dashboard</button>
+              </form>
+            )}
+          </div>
+        </section>
+      )}
+
+      {authState === 'authenticated' && mobileMode === 'dashboard' ? (
         <>
           <section className="mobile-pages" onScroll={handleScroll}>
             {visiblePages.map((page) => (
@@ -2255,7 +2368,7 @@ function MobileWebApp({ pages, wallpaper, settings }) {
 
           <PageDots pages={visiblePages} activePageId={activePageId} />
         </>
-      ) : (
+      ) : authState === 'authenticated' ? (
         <section className="numpad-panel" aria-label="Pavé numérique">
           {NUMPAD_ROWS.map((row, rowIndex) => (
             <div className={`numpad-row row-${rowIndex + 1}`} key={`row-${rowIndex}`}>
@@ -2284,7 +2397,7 @@ function MobileWebApp({ pages, wallpaper, settings }) {
             </div>
           ))}
         </section>
-      )}
+      ) : null}
     </main>
   )
 }

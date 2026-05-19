@@ -16,9 +16,15 @@ export function isPrivateIpv4(ip) {
   if (!ip) return false
   if (ip.startsWith('10.')) return true
   if (ip.startsWith('192.168.')) return true
+  if (isTailscaleIpv4(ip)) return true
 
   const [first, second] = ip.split('.').map(Number)
   return first === 172 && second >= 16 && second <= 31
+}
+
+export function isTailscaleIpv4(ip) {
+  const [first, second] = String(ip).split('.').map(Number)
+  return first === 100 && second >= 64 && second <= 127
 }
 
 export function getInterfaceId(name, address) {
@@ -27,6 +33,10 @@ export function getInterfaceId(name, address) {
 
 export function getInterfaceKind(name = '') {
   const normalizedName = name.toLowerCase()
+
+  if (normalizedName.includes('tailscale')) {
+    return 'Tailscale'
+  }
 
   if (normalizedName.includes('wi-fi') || normalizedName.includes('wifi') || normalizedName.includes('wireless')) {
     return 'Wi-Fi'
@@ -165,6 +175,8 @@ export function normalizeRemoteAddress(remoteAddress = '') {
 
 export function isSameSubnet(clientIp, lanInterface) {
   if (!lanInterface?.netmask || !isPrivateIpv4(clientIp)) return false
+  if (isTailscaleIpv4(clientIp) && isTailscaleIpv4(lanInterface.address)) return true
+
   const mask = ipv4ToInt(lanInterface.netmask)
   return (ipv4ToInt(clientIp) & mask) === (ipv4ToInt(lanInterface.address) & mask)
 }

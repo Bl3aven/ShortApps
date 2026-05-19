@@ -2,7 +2,7 @@
 
 Prototype React/Vite de l'interface ShortApps : configuration PC, dashboards mobiles,
 raccourcis personnalisables, fonds d'ecran, pages, scan Windows, lancement
-d'applications et appairage QR Code.
+d'applications et acces mobile protege par mot de passe.
 
 ## Lancer en developpement
 
@@ -48,17 +48,17 @@ La meme variable `SHORTAPPS_LOCAL_IP` peut etre utilisee avec `serve:local`.
 Le nom affiche sur le telephone peut aussi etre force avec `SHORTAPPS_PC_NAME`.
 
 `server/local-server.js` sert le build sur le port `56321`, demarre le HTTPS
-mobile sur `56322`, expose `/api/status` et `/api/pairing`, detecte
+mobile sur `56322`, expose `/api/status` et `/api/auth/*`, detecte
 dynamiquement les IP privees du PC, puis refuse les clients qui ne sont pas sur
-un sous-reseau local autorise.
+un sous-reseau local autorise ou sur le reseau Tailscale autorise.
 
-En version 1.6, le serveur ecoute sur `0.0.0.0` afin de pouvoir repondre sur
+En version 1.7, le serveur ecoute sur `0.0.0.0` afin de pouvoir repondre sur
 toutes les interfaces actives de la machine. L'ecran Parametres permet ensuite
 de choisir :
 
 - `Toutes les IP` : toutes les interfaces LAN privees sont annoncees ;
 - `Selection` : seules les interfaces cochees sont annoncees et autorisees ;
-- l'interface primaire utilisee par l'adresse affichee et le QR Code.
+- l'interface primaire utilisee par l'adresse affichee et le lien mobile.
 
 `/api/status` renvoie aussi `interfaces`, `exposedInterfaces`, `exposedUrls` et
 `networkExposure` pour que l'interface puisse afficher par exemple les URLs
@@ -70,12 +70,19 @@ relancez l'application pour regenerer le certificat avec cette nouvelle IP.
 
 Important pour iOS : le certificat HTTPS local genere par ShortApps est auto-signe.
 Il aide au developpement local, mais il n'est pas suffisant pour une webapp iOS
-propre sans action manuelle de confiance sur l'iPhone. Le choix recommande est
-d'utiliser un domaine reel avec certificat public, puis de faire pointer ce
-domaine vers l'IP LAN du PC quand le telephone est a la maison ou au bureau.
-Exemple : `https://shortapps.example.com` pointe vers `192.168.0.55` sur le LAN
-et le QR Code utilise cette URL. Ce chemin garde la latence locale, contrairement
-a un proxy Internet qui ajoute un aller-retour reseau.
+propre sans action manuelle de confiance sur l'iPhone.
+
+Depuis la version 1.7, le chemin recommande est Tailscale :
+
+1. installer Tailscale sur le PC et l'iPhone ;
+2. activer Tailscale Serve pour exposer `http://127.0.0.1:56321` en HTTPS sur
+   le nom Tailscale du PC ;
+3. renseigner l'URL `https://<pc>.<tailnet>.ts.net` dans ShortApps ;
+4. definir le mot de passe mobile dans l'ecran Parametres.
+
+Le PC n'a aucun port entrant ouvert sur Internet. Tailscale garde le trafic dans
+le reseau prive du tailnet et peut utiliser une connexion directe quand les deux
+appareils sont sur le meme reseau.
 
 Si vous possedez deja un certificat public pour ce domaine, ShortApps peut
 l'utiliser directement au demarrage :
@@ -91,10 +98,14 @@ Un fichier PFX est aussi supporte avec `SHORTAPPS_TLS_PFX` et, si besoin,
 
 ### Pistes HTTPS sans exposer le PC a Internet
 
-Option recommandee basse latence : domaine public + certificat Let's Encrypt
-DNS-01 + DNS local. Le certificat est public et valide pour iOS, mais le domaine
-resout vers l'IP privee du PC seulement sur le LAN. Aucun port du PC n'est ouvert
-sur Internet.
+Option recommandee simple : Tailscale + Tailscale Serve. La configuration du
+certificat est geree par Tailscale, le PC n'est pas expose directement, et la
+latence reste basse quand la connexion est directe.
+
+Option basse latence avancee : domaine public + certificat Let's Encrypt DNS-01
++ DNS local. Le certificat est public et valide pour iOS, mais le domaine resout
+vers l'IP privee du PC seulement sur le LAN. Aucun port du PC n'est ouvert sur
+Internet.
 
 Option tres robuste : VPN mesh type Tailscale, WireGuard ou ZeroTier. L'iPhone
 et le PC sont dans un reseau prive chiffre. Le domaine ou le nom interne pointe
@@ -119,17 +130,18 @@ telephone. Les changements de pages, raccourcis, fonds, exposition reseau et URL
 mobile HTTPS sont ecrits
 dans `data/shortapps-config.json`, puis relus par `/mobile`.
 
-Le QR Code d'appairage pointe vers `/mobile?pair=...&code=...` afin que le
-telephone ouvre directement la webapp locale en plein ecran.
-Quand une paire active est enregistree dans la configuration, le serveur local
-verifie aussi ces parametres avant de servir `/mobile` et `/api/config` a un
-client non-localhost.
+La webapp mobile demande le mot de passe configure dans l'interface Windows.
+Apres connexion, le telephone recoit une session locale temporaire stockee dans
+le navigateur. `/api/config`, `/api/apps/launch` et `/api/keyboard` refusent les
+clients mobiles non authentifies. Les endpoints de scan et de validation des
+applications restent reserves a la console Windows pour ne pas exposer la liste
+des logiciels installes.
 
-En version 1.6, l'ecran Parametres permet aussi de renseigner une URL mobile HTTPS
-publique ou LAN, par exemple `https://shortapps.example.com`. Si elle est valide,
-le QR Code l'utilise a la place de l'adresse IP locale.
+En version 1.7, l'ecran Parametres permet aussi de renseigner une URL mobile
+HTTPS, par exemple `https://moodbeast.tailnet-name.ts.net`. Si elle est valide,
+le bouton de copie utilise cette URL a la place de l'adresse IP locale.
 
-`/api/apps/scan` est dynamique sur Windows. Il scanne :
+`/api/apps/scan` est dynamique sur Windows et reserve a l'interface PC. Il scanne :
 
 - les raccourcis `.lnk` du menu Demarrer utilisateur et global ;
 - les raccourcis du Bureau utilisateur et global ;
@@ -137,7 +149,7 @@ le QR Code l'utilise a la place de l'adresse IP locale.
 - les chemins `.exe`, arguments, dossiers de travail et emplacements d'icones
   quand Windows les fournit.
 
-La version 1.6 extrait aussi les logos Windows disponibles sous forme de
+La version 1.7 extrait aussi les logos Windows disponibles sous forme de
 PNG base64 (`iconDataUrl`). L'interface les affiche automatiquement sur le
 dashboard et la webapp mobile. Si aucune icone exploitable n'est disponible,
 ShortApps conserve le rendu par initiales et degrade.
