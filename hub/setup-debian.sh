@@ -63,6 +63,16 @@ EOF
 chmod 0600 "${ENV_FILE}"
 chown root:root "${ENV_FILE}"
 
+install -d -m 0755 /etc/fail2ban/jail.d
+cat >/etc/fail2ban/jail.d/shortapps-sshd.local <<EOF
+[sshd]
+enabled = true
+backend = systemd
+maxretry = 5
+findtime = 10m
+bantime = 1h
+EOF
+
 cat >"${NGINX_SITE}" <<EOF
 map \$http_upgrade \$connection_upgrade {
   default upgrade;
@@ -208,7 +218,6 @@ ProtectHome=true
 ReadWritePaths=${APP_DIR}
 CapabilityBoundingSet=
 LockPersonality=true
-MemoryDenyWriteExecute=true
 
 [Install]
 WantedBy=multi-user.target
