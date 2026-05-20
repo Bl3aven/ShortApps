@@ -363,3 +363,8 @@ export function getHubClientStatus() {
     connectedAt: '',
   }
 }
+
+export async function refreshHubClientConfig() {
+  if (!activeHubClient) return
+  await activeHubClient.refreshConfig()
+}

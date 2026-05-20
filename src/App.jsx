@@ -693,6 +693,16 @@ function App() {
   }, [refreshServerStatus])
 
   useEffect(() => {
+    if (isMobileWebApp) return undefined
+
+    const statusTimer = window.setInterval(() => {
+      refreshServerStatus()
+    }, 2500)
+
+    return () => window.clearInterval(statusTimer)
+  }, [isMobileWebApp, refreshServerStatus])
+
+  useEffect(() => {
     if (!configReady || isMobileWebApp) return
 
     setHubSettings((currentSettings) => {
@@ -1073,6 +1083,7 @@ function App() {
           setHubSettings={setHubSettings}
           networkExposure={networkExposure}
           setNetworkExposure={updateNetworkExposure}
+          refreshServerStatus={refreshServerStatus}
         />
       )
     }
@@ -1859,6 +1870,7 @@ function SettingsView({
   setHubSettings,
   networkExposure,
   setNetworkExposure,
+  refreshServerStatus,
 }) {
   const pcName = useContext(PcNameContext)
   const normalizedExposure = normalizeNetworkExposure(networkExposure)
@@ -1880,11 +1892,17 @@ function SettingsView({
   const normalizedHubSettings = normalizeHubSettings(hubSettings)
   const normalizedHubUrl = normalizePublicAccessUrl(normalizedHubSettings.url)
   const hubUrlIsInvalid = normalizedHubSettings.url.trim() !== '' && !normalizedHubUrl
+  const hubActivationReady = Boolean(
+    normalizedHubUrl &&
+      normalizedHubSettings.machineId &&
+      normalizedHubSettings.secret.trim(),
+  )
   const hubStatus = localServer.hub ?? { enabled: false, connected: false, state: 'disabled' }
   const [authStatus, setAuthStatus] = useState({ configured: false })
   const [password, setPassword] = useState('')
   const [passwordConfirm, setPasswordConfirm] = useState('')
   const [passwordSaveState, setPasswordSaveState] = useState('idle')
+  const [hubSaveState, setHubSaveState] = useState('idle')
 
   const refreshAuthStatus = useCallback(() => {
     fetch('/api/auth/status')
@@ -1932,6 +1950,42 @@ function SettingsView({
         ...patch,
       }),
     )
+  }
+
+  const saveHubConfiguration = async ({ enabled = true } = {}) => {
+    const nextHubSettings = normalizeHubSettings({
+      ...normalizedHubSettings,
+      enabled,
+    })
+
+    if (nextHubSettings.enabled && !hubActivationReady) {
+      setHubSaveState('invalid')
+      return
+    }
+
+    setHubSaveState('saving')
+    updateHubSettings(nextHubSettings)
+
+    try {
+      const response = await fetch('/api/config', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          config: {
+            hub: nextHubSettings,
+          },
+        }),
+      })
+      if (!response.ok) throw new Error('HUB_SAVE_FAILED')
+
+      setHubSaveState('saved')
+      refreshServerStatus?.()
+      window.setTimeout(() => refreshServerStatus?.(), 900)
+      window.setTimeout(() => refreshServerStatus?.(), 2200)
+      window.setTimeout(() => setHubSaveState('idle'), 2600)
+    } catch {
+      setHubSaveState('failed')
+    }
   }
 
   const setExposureMode = (mode) => {
@@ -2162,6 +2216,48 @@ function SettingsView({
                 ? "L'URL du hub doit commencer par https://."
                 : "Le hub relaie le telephone vers ce PC via une connexion sortante. Le mot de passe mobile reste verifie par le PC."}
             </span>
+          </div>
+          {hubSaveState === 'invalid' && (
+            <div className="inline-info validation-warning">
+              <Info size={17} />
+              <span>Renseignez une URL HTTPS valide, un ID machine et le secret hub avant d'activer la connexion.</span>
+            </div>
+          )}
+          {hubSaveState === 'failed' && (
+            <div className="inline-info validation-warning">
+              <Info size={17} />
+              <span>Impossible d'enregistrer la configuration hub depuis cette session.</span>
+            </div>
+          )}
+          {hubSaveState === 'saved' && (
+            <div className="inline-info validation-success">
+              <Check size={17} />
+              <span>Configuration hub enregistrée. La connexion est relancée automatiquement.</span>
+            </div>
+          )}
+          <div className="button-row hub-action-row">
+            <button
+              className="primary-button"
+              type="button"
+              onClick={() => saveHubConfiguration({ enabled: true })}
+            >
+              <Network size={16} />
+              {hubSaveState === 'saving'
+                ? 'Enregistrement...'
+                : normalizedHubSettings.enabled
+                  ? 'Enregistrer et connecter'
+                  : 'Activer et enregistrer'}
+            </button>
+            {(normalizedHubSettings.enabled || hubStatus.enabled || hubStatus.connected) && (
+              <button
+                className="soft-button"
+                type="button"
+                onClick={() => saveHubConfiguration({ enabled: false })}
+              >
+                <X size={16} />
+                Désactiver le hub
+              </button>
+            )}
           </div>
         </div>
 

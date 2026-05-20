@@ -21,7 +21,7 @@ import { validateAppCatalog, validateAppTarget } from './app-validator.js'
 import { sendKeyboardInput, warmKeyboardWorker } from './keyboard-controller.js'
 import { readConfig, writeConfig } from './config-store.js'
 import { ensureHttpsCertificate } from './https-cert.js'
-import { getHubClientStatus, startHubClient } from './hub-client.js'
+import { getHubClientStatus, refreshHubClientConfig, startHubClient } from './hub-client.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(__dirname, '..')
@@ -471,14 +471,15 @@ async function handleRequestAsync(request, response) {
       }
 
       readJsonBody(request)
-        .then((payload) => {
+        .then(async (payload) => {
           const nextConfig = {
             ...(config ?? {}),
             ...(payload.config ?? {}),
             auth: config?.auth,
           }
           delete nextConfig.pairing
-          return writeConfig(nextConfig)
+          await writeConfig(nextConfig)
+          await refreshHubClientConfig()
         })
         .then(() => sendJson(response, 200, { saved: true }))
         .catch((error) =>
