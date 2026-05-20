@@ -31,13 +31,19 @@ import {
 import './App.css'
 
 const DEFAULT_PC_NAME = 'ShortApps PC'
-const APP_VERSION = '1.7.0'
+const APP_VERSION = '1.8.0'
 const HTTPS_SERVER_PORT = 56322
 const PcNameContext = createContext(DEFAULT_PC_NAME)
 const DEFAULT_NETWORK_EXPOSURE = {
   mode: 'all',
   selectedInterfaceIds: [],
   primaryInterfaceId: '',
+}
+const DEFAULT_HUB_SETTINGS = {
+  enabled: false,
+  url: 'https://shortapps.tournayre.ovh',
+  machineId: '',
+  secret: '',
 }
 const NUMPAD_ROWS = [
   [
@@ -422,6 +428,21 @@ const normalizePublicAccessUrl = (value = '') => {
   }
 }
 
+const createMachineId = (value = '') =>
+  String(value)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64)
+
+const normalizeHubSettings = (settings = {}) => ({
+  enabled: Boolean(settings.enabled),
+  url: typeof settings.url === 'string' ? settings.url : DEFAULT_HUB_SETTINGS.url,
+  machineId: createMachineId(settings.machineId),
+  secret: typeof settings.secret === 'string' ? settings.secret : '',
+})
+
 const normalizeNetworkExposure = (exposure = {}) => ({
   mode: exposure.mode === 'selected' ? 'selected' : 'all',
   selectedInterfaceIds: Array.isArray(exposure.selectedInterfaceIds)
@@ -447,6 +468,7 @@ const normalizeServerStatus = (status) => ({
   exposedInterfaces: Array.isArray(status.exposedInterfaces) ? status.exposedInterfaces : [],
   exposedUrls: Array.isArray(status.exposedUrls) ? status.exposedUrls : [],
   networkExposure: normalizeNetworkExposure(status.networkExposure),
+  hub: status.hub ?? { enabled: false, connected: false, state: 'disabled' },
 })
 
 const triggerHaptic = (duration = 12) => {
@@ -548,6 +570,7 @@ function App() {
   const [appFilter, setAppFilter] = useState('Toutes')
   const [wallpaperFilter, setWallpaperFilter] = useState('Tous')
   const [publicAccessUrl, setPublicAccessUrl] = usePersistentState('shortapps.publicAccessUrl', '')
+  const [hubSettings, setHubSettings] = usePersistentState('shortapps.hubSettings', DEFAULT_HUB_SETTINGS)
   const [scanState, setScanState] = useState('idle')
   const [validationState, setValidationState] = useState('idle')
   const [configReady, setConfigReady] = useState(false)
@@ -561,11 +584,23 @@ function App() {
   const selectedWallpaper =
     WALLPAPERS.find((wallpaper) => wallpaper.id === selectedWallpaperId) ?? WALLPAPERS[0]
   const publicMobileBaseUrl = normalizePublicAccessUrl(publicAccessUrl)
+  const normalizedHubSettings = normalizeHubSettings(hubSettings)
+  const hubMobileBaseUrl =
+    normalizedHubSettings.enabled && normalizePublicAccessUrl(normalizedHubSettings.url)
+      ? normalizePublicAccessUrl(normalizedHubSettings.url)
+      : ''
   const mobileUrl = useMemo(() => {
+    if (hubMobileBaseUrl) {
+      const query = normalizedHubSettings.machineId
+        ? `?machine=${encodeURIComponent(normalizedHubSettings.machineId)}`
+        : ''
+      return `${hubMobileBaseUrl}/mobile${query}`
+    }
+
     const mobileBaseUrl = publicMobileBaseUrl || localServer.url
 
     return `${mobileBaseUrl}/mobile`
-  }, [localServer.url, publicMobileBaseUrl])
+  }, [hubMobileBaseUrl, localServer.url, normalizedHubSettings.machineId, publicMobileBaseUrl])
 
   const updateNetworkExposure = useCallback((nextExposure) => {
     setNetworkExposure((currentExposure) => {
@@ -630,6 +665,7 @@ function App() {
           if (config.wallpaperSettings) setWallpaperSettings(config.wallpaperSettings)
           if (config.networkExposure) updateNetworkExposure(config.networkExposure)
           if (typeof config.publicAccessUrl === 'string') setPublicAccessUrl(config.publicAccessUrl)
+          if (config.hub) setHubSettings(normalizeHubSettings(config.hub))
         }
 
         setConfigReady(true)
@@ -645,6 +681,7 @@ function App() {
     isMobileWebApp,
     setCatalog,
     setPublicAccessUrl,
+    setHubSettings,
     setPages,
     setSelectedWallpaperId,
     setWallpaperSettings,
@@ -654,6 +691,20 @@ function App() {
   useEffect(() => {
     refreshServerStatus().then(() => {})
   }, [refreshServerStatus])
+
+  useEffect(() => {
+    if (!configReady || isMobileWebApp) return
+
+    setHubSettings((currentSettings) => {
+      const normalizedSettings = normalizeHubSettings(currentSettings)
+      if (normalizedSettings.machineId) return currentSettings
+
+      return {
+        ...normalizedSettings,
+        machineId: createMachineId(pcName),
+      }
+    })
+  }, [configReady, isMobileWebApp, pcName, setHubSettings])
 
   useEffect(() => {
     if (!configReady) return undefined
@@ -670,6 +721,7 @@ function App() {
             wallpaperSettings,
             networkExposure,
             publicAccessUrl,
+            hub: normalizeHubSettings(hubSettings),
           },
         }),
       }).catch(() => {})
@@ -679,6 +731,7 @@ function App() {
   }, [
     catalog,
     configReady,
+    hubSettings,
     networkExposure,
     pages,
     publicAccessUrl,
@@ -1016,6 +1069,8 @@ function App() {
           mobileUrl={mobileUrl}
           publicAccessUrl={publicAccessUrl}
           setPublicAccessUrl={setPublicAccessUrl}
+          hubSettings={hubSettings}
+          setHubSettings={setHubSettings}
           networkExposure={networkExposure}
           setNetworkExposure={updateNetworkExposure}
         />
@@ -1800,6 +1855,8 @@ function SettingsView({
   mobileUrl,
   publicAccessUrl,
   setPublicAccessUrl,
+  hubSettings,
+  setHubSettings,
   networkExposure,
   setNetworkExposure,
 }) {
@@ -1820,6 +1877,10 @@ function SettingsView({
   const displayedExposedCount = exposedInterfaces.length || networkInterfaces.length
   const normalizedPublicUrl = normalizePublicAccessUrl(publicAccessUrl)
   const publicUrlIsInvalid = publicAccessUrl.trim() !== '' && !normalizedPublicUrl
+  const normalizedHubSettings = normalizeHubSettings(hubSettings)
+  const normalizedHubUrl = normalizePublicAccessUrl(normalizedHubSettings.url)
+  const hubUrlIsInvalid = normalizedHubSettings.url.trim() !== '' && !normalizedHubUrl
+  const hubStatus = localServer.hub ?? { enabled: false, connected: false, state: 'disabled' }
   const [authStatus, setAuthStatus] = useState({ configured: false })
   const [password, setPassword] = useState('')
   const [passwordConfirm, setPasswordConfirm] = useState('')
@@ -1862,6 +1923,15 @@ function SettingsView({
     } catch {
       setPasswordSaveState('failed')
     }
+  }
+
+  const updateHubSettings = (patch) => {
+    setHubSettings((currentSettings) =>
+      normalizeHubSettings({
+        ...currentSettings,
+        ...patch,
+      }),
+    )
   }
 
   const setExposureMode = (mode) => {
@@ -2035,7 +2105,7 @@ function SettingsView({
           </div>
         </div>
 
-        <DividerTitle icon={Lock} title="Accès mobile Tailscale" />
+        <DividerTitle icon={Lock} title="Accès mobile HTTPS" />
         <Field label="URL mobile HTTPS">
           <input
             value={publicAccessUrl}
@@ -2049,8 +2119,50 @@ function SettingsView({
           <span>
             {publicUrlIsInvalid
               ? "L'URL mobile doit commencer par https:// pour etre utilisee par iOS."
-              : "Utilisez ici l'URL HTTPS fournie par Tailscale Serve. Vide, ShortApps utilise l'adresse HTTPS locale du PC."}
+              : "Utilisez ici une URL HTTPS directe si vous n'utilisez pas le hub. Vide, ShortApps utilise l'adresse HTTPS locale du PC."}
           </span>
+        </div>
+
+        <DividerTitle icon={Network} title="Hub distant" />
+        <div className="hub-settings">
+          <ToggleRow
+            label="Connecter ce PC au hub ShortApps"
+            checked={normalizedHubSettings.enabled}
+            onChange={() => updateHubSettings({ enabled: !normalizedHubSettings.enabled })}
+          />
+          <div className="password-grid">
+            <Field label="URL du hub">
+              <input
+                value={normalizedHubSettings.url}
+                onChange={(event) => updateHubSettings({ url: event.target.value })}
+                placeholder="https://shortapps.tournayre.ovh"
+              />
+            </Field>
+            <Field label="ID machine">
+              <input
+                value={normalizedHubSettings.machineId}
+                onChange={(event) => updateHubSettings({ machineId: event.target.value })}
+                placeholder="moodbeast"
+                autoCapitalize="none"
+              />
+            </Field>
+          </div>
+          <Field label="Secret de connexion hub">
+            <input
+              type="password"
+              value={normalizedHubSettings.secret}
+              onChange={(event) => updateHubSettings({ secret: event.target.value })}
+              placeholder="Secret long defini sur la VM"
+            />
+          </Field>
+          <div className={`inline-info ${hubUrlIsInvalid ? 'validation-warning' : ''}`}>
+            <Info size={17} />
+            <span>
+              {hubUrlIsInvalid
+                ? "L'URL du hub doit commencer par https://."
+                : "Le hub relaie le telephone vers ce PC via une connexion sortante. Le mot de passe mobile reste verifie par le PC."}
+            </span>
+          </div>
         </div>
 
         <div className="mobile-link-panel">
@@ -2130,11 +2242,12 @@ function SettingsView({
               ['Serveur local', isOnline ? 'En ligne' : 'Hors ligne'],
               ['IP primaire', localServer.ip],
               ['Interfaces exposées', `${displayedExposedCount}/${networkInterfaces.length}`],
-              ['URL mobile', normalizedPublicUrl ? 'Tailscale HTTPS' : 'HTTPS local'],
+              ['URL mobile', normalizedHubSettings.enabled ? 'Hub HTTPS' : normalizedPublicUrl ? 'HTTPS externe' : 'HTTPS local'],
+              ['Hub distant', hubStatus.connected ? 'Connecté' : hubStatus.enabled ? hubStatus.state : 'Désactivé'],
               ['Mot de passe', authStatus.configured ? 'Configuré' : 'À définir'],
               ['Version', APP_VERSION],
             ]}
-            icons={[Network, Server, Network, Lock, Info, Info]}
+            icons={[Network, Server, Network, Network, Lock, Info, Info]}
           />
         </section>
         <section className="panel system-card">

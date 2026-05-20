@@ -19,7 +19,7 @@ export default defineConfig([
     },
   },
   {
-    files: ['electron/**/*.js', 'server/**/*.js', 'vite.config.js'],
+    files: ['electron/**/*.js', 'server/**/*.js', 'hub/**/*.js', 'vite.config.js'],
     languageOptions: {
       globals: globals.node,
     },

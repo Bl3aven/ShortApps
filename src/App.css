@@ -1632,7 +1632,8 @@
 }
 
 .mobile-link-panel,
-.password-settings {
+.password-settings,
+.hub-settings {
   display: grid;
   gap: 12px;
 }

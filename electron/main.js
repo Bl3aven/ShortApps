@@ -66,6 +66,7 @@ app.on('activate', () => {
 })
 
 app.on('before-quit', () => {
+  serverHandle?.hubClient?.close()
   serverHandle?.httpServer?.close()
   serverHandle?.httpsServer?.close()
 })

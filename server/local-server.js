@@ -21,6 +21,7 @@ import { validateAppCatalog, validateAppTarget } from './app-validator.js'
 import { sendKeyboardInput, warmKeyboardWorker } from './keyboard-controller.js'
 import { readConfig, writeConfig } from './config-store.js'
 import { ensureHttpsCertificate } from './https-cert.js'
+import { getHubClientStatus, startHubClient } from './hub-client.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(__dirname, '..')
@@ -82,10 +83,17 @@ function sendJson(response, statusCode, payload) {
   response.end(JSON.stringify(payload))
 }
 
-function createPublicConfig(config) {
+function createDesktopConfig(config) {
   const publicConfig = { ...(config ?? {}) }
   delete publicConfig.auth
   delete publicConfig.pairing
+
+  return publicConfig
+}
+
+function createPublicConfig(config) {
+  const publicConfig = createDesktopConfig(config)
+  delete publicConfig.hub
 
   return publicConfig
 }
@@ -234,6 +242,7 @@ async function handleRequestAsync(request, response) {
     httpsError: httpsState.error,
     networkExposure: config?.networkExposure,
   })
+  status.hub = getHubClientStatus()
 
   if (
     httpsState.available &&
@@ -449,7 +458,9 @@ async function handleRequestAsync(request, response) {
         }
       }
 
-      sendJson(response, 200, { config: createPublicConfig(config) })
+      sendJson(response, 200, {
+        config: isDesktopClient(request) ? createDesktopConfig(config) : createPublicConfig(config),
+      })
       return
     }
 
@@ -548,10 +559,12 @@ export async function startLocalServer({ host = '0.0.0.0', silent = false } = {}
     httpsError: httpsState.error,
     networkExposure: config?.networkExposure,
   })
+  const hubClient = startHubClient({ localPort: port })
   const payload = {
     server,
     httpServer: server,
     httpsServer,
+    hubClient,
     port,
     httpsPort,
     desktopUrl: `http://127.0.0.1:${port}`,

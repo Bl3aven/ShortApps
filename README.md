@@ -50,9 +50,9 @@ Le nom affiche sur le telephone peut aussi etre force avec `SHORTAPPS_PC_NAME`.
 `server/local-server.js` sert le build sur le port `56321`, demarre le HTTPS
 mobile sur `56322`, expose `/api/status` et `/api/auth/*`, detecte
 dynamiquement les IP privees du PC, puis refuse les clients qui ne sont pas sur
-un sous-reseau local autorise ou sur le reseau Tailscale autorise.
+un sous-reseau local autorise ou sur un tunnel hub authentifie.
 
-En version 1.7, le serveur ecoute sur `0.0.0.0` afin de pouvoir repondre sur
+En version 1.8, le serveur ecoute sur `0.0.0.0` afin de pouvoir repondre sur
 toutes les interfaces actives de la machine. L'ecran Parametres permet ensuite
 de choisir :
 
@@ -72,17 +72,34 @@ Important pour iOS : le certificat HTTPS local genere par ShortApps est auto-sig
 Il aide au developpement local, mais il n'est pas suffisant pour une webapp iOS
 propre sans action manuelle de confiance sur l'iPhone.
 
-Depuis la version 1.7, le chemin recommande est Tailscale :
+Depuis la version 1.8, le chemin recommande est le hub ShortApps auto-heberge :
 
-1. installer Tailscale sur le PC et l'iPhone ;
-2. activer Tailscale Serve pour exposer `http://127.0.0.1:56321` en HTTPS sur
-   le nom Tailscale du PC ;
-3. renseigner l'URL `https://<pc>.<tailnet>.ts.net` dans ShortApps ;
-4. definir le mot de passe mobile dans l'ecran Parametres.
+1. pointer `shortapps.tournayre.ovh` vers la VM Debian publique ;
+2. lancer `hub/setup-debian.sh` sur la VM pour installer Nginx, Certbot,
+   UFW, fail2ban, unattended-upgrades et le service `shortapps-hub` ;
+3. configurer dans ShortApps l'URL `https://shortapps.tournayre.ovh`,
+   l'ID machine et le secret hub ;
+4. definir le mot de passe mobile dans l'ecran Parametres ;
+5. ouvrir `https://shortapps.tournayre.ovh` depuis le telephone, saisir
+   l'ID machine et le mot de passe.
 
-Le PC n'a aucun port entrant ouvert sur Internet. Tailscale garde le trafic dans
-le reseau prive du tailnet et peut utiliser une connexion directe quand les deux
-appareils sont sur le meme reseau.
+Le PC n'a aucun port entrant ouvert sur Internet. Il ouvre uniquement une
+connexion WebSocket sortante vers la VM. Le hub relaie ensuite le navigateur du
+telephone vers le PC distant via ce tunnel.
+
+Installer le hub sur Debian :
+
+```bash
+export SHORTAPPS_DOMAIN=shortapps.tournayre.ovh
+export LETSENCRYPT_EMAIL=admin@tournayre.ovh
+export SHORTAPPS_HUB_REGISTRATION_SECRET="$(openssl rand -base64 48)"
+sudo -E bash hub/setup-debian.sh
+```
+
+Conservez `SHORTAPPS_HUB_REGISTRATION_SECRET` : ce meme secret doit etre saisi
+dans ShortApps cote PC pour autoriser l'enregistrement de la machine sur le hub.
+Le mot de passe mobile, lui, reste verifie par le PC via `/api/auth/login` et
+n'est pas stocke par le hub.
 
 Si vous possedez deja un certificat public pour ce domaine, ShortApps peut
 l'utiliser directement au demarrage :
@@ -98,9 +115,13 @@ Un fichier PFX est aussi supporte avec `SHORTAPPS_TLS_PFX` et, si besoin,
 
 ### Pistes HTTPS sans exposer le PC a Internet
 
-Option recommandee simple : Tailscale + Tailscale Serve. La configuration du
-certificat est geree par Tailscale, le PC n'est pas expose directement, et la
-latence reste basse quand la connexion est directe.
+Option recommandee controlee : VM Debian + Nginx + Let's Encrypt + tunnel
+WebSocket sortant. La VM est publique, verrouillee, et controle les flux. Le PC
+reste prive et ne fait qu'initier une connexion sortante.
+
+Option simple alternative : Tailscale + Tailscale Serve. La configuration du
+certificat est geree par Tailscale, le PC n'est pas expose directement, mais le
+trafic depend du tailnet.
 
 Option basse latence avancee : domaine public + certificat Let's Encrypt DNS-01
 + DNS local. Le certificat est public et valide pour iOS, mais le domaine resout
@@ -112,22 +133,52 @@ et le PC sont dans un reseau prive chiffre. Le domaine ou le nom interne pointe
 vers l'IP VPN. Aucun port entrant n'est ouvert sur la box, mais l'iPhone doit
 avoir le VPN actif.
 
-Option proxy sortant : Cloudflare Tunnel, ngrok, ou VPS avec tunnel WireGuard.
-Le PC initie une connexion sortante vers le relais, puis le relais expose une
-URL HTTPS publique. Le PC n'est pas directement expose, mais la latence passe
-par le relais et il faut renforcer l'authentification avant usage hors LAN.
+Option proxy sortant tiers : Cloudflare Tunnel ou ngrok. Le PC initie une
+connexion sortante vers le relais, puis le relais expose une URL HTTPS publique.
+Le PC n'est pas directement expose, mais le flux sort de votre infrastructure.
 
 Option locale controlee : installer une autorite de certification privee sur
 l'iPhone et signer le certificat local ShortApps avec cette autorite. C'est
 efficace pour un petit nombre d'appareils de confiance, mais moins pratique et
 moins propre qu'un certificat public.
 
+## Hub distant
+
+Le hub est compose de deux pieces :
+
+- `hub/server.js` sur la VM Debian : ecoute seulement en local sur
+  `127.0.0.1:8080`, derriere Nginx en HTTPS ;
+- `server/hub-client.js` cote PC : ouvre un WebSocket sortant vers
+  `/tunnel/pc` avec l'ID machine et le secret hub.
+
+Flux d'authentification :
+
+1. Le PC se connecte au hub avec son ID machine et le secret hub.
+2. Le telephone ouvre `https://shortapps.tournayre.ovh`.
+3. Le hub affiche une page de login avec `ID machine` et `mot de passe`.
+4. Le hub transmet le mot de passe au PC via le tunnel sur `/api/auth/login`.
+5. Si le PC accepte, le hub cree une session HTTPOnly et relaie `/mobile`,
+   `/assets/*`, `/api/config`, `/api/apps/launch` et `/api/keyboard`.
+
+Le secret hub autorise seulement l'enregistrement du PC sur le relais. Le mot
+de passe utilisateur reste cote PC et le hub ne conserve que la session
+temporaire necessaire au relayage.
+
+Le script `hub/setup-debian.sh` installe :
+
+- Nginx en frontal HTTPS ;
+- Certbot avec challenge webroot Let's Encrypt ;
+- service systemd `shortapps-hub` execute par un utilisateur systeme dedie ;
+- UFW avec ports entrants limites a SSH, HTTP et HTTPS ;
+- fail2ban et unattended-upgrades ;
+- en-tetes de securite Nginx, HSTS, rate limit sur `/hub/login`.
+
 `/api/status` renvoie aussi le nom reel de la machine (`pcName`) ; l'en-tete du
 telephone dans l'interface utilise cette valeur.
 
 `/api/config` partage la configuration entre l'interface Windows et la webapp
 telephone. Les changements de pages, raccourcis, fonds, exposition reseau et URL
-mobile HTTPS sont ecrits
+mobile HTTPS/hub sont ecrits
 dans `data/shortapps-config.json`, puis relus par `/mobile`.
 
 La webapp mobile demande le mot de passe configure dans l'interface Windows.
@@ -137,9 +188,9 @@ clients mobiles non authentifies. Les endpoints de scan et de validation des
 applications restent reserves a la console Windows pour ne pas exposer la liste
 des logiciels installes.
 
-En version 1.7, l'ecran Parametres permet aussi de renseigner une URL mobile
-HTTPS, par exemple `https://moodbeast.tailnet-name.ts.net`. Si elle est valide,
-le bouton de copie utilise cette URL a la place de l'adresse IP locale.
+En version 1.8, l'ecran Parametres permet aussi de configurer le hub distant :
+URL HTTPS du hub, ID machine et secret de connexion hub. Quand le hub est actif,
+le bouton de copie utilise l'URL hub avec l'ID machine en preselection.
 
 `/api/apps/scan` est dynamique sur Windows et reserve a l'interface PC. Il scanne :
 
@@ -149,7 +200,7 @@ le bouton de copie utilise cette URL a la place de l'adresse IP locale.
 - les chemins `.exe`, arguments, dossiers de travail et emplacements d'icones
   quand Windows les fournit.
 
-La version 1.7 extrait aussi les logos Windows disponibles sous forme de
+La version 1.8 extrait aussi les logos Windows disponibles sous forme de
 PNG base64 (`iconDataUrl`). L'interface les affiche automatiquement sur le
 dashboard et la webapp mobile. Si aucune icone exploitable n'est disponible,
 ShortApps conserve le rendu par initiales et degrade.
