@@ -1,16 +1,44 @@
 import { Buffer } from 'node:buffer'
-import { randomBytes, timingSafeEqual } from 'node:crypto'
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { createServer } from 'node:http'
 import WebSocket, { WebSocketServer } from 'ws'
 
 const host = process.env.SHORTAPPS_HUB_HOST ?? '127.0.0.1'
 const port = Number(process.env.SHORTAPPS_HUB_PORT ?? 8080)
+const publicDomain = String(process.env.SHORTAPPS_HUB_DOMAIN ?? '').trim().toLowerCase()
+const allowedHostnames = new Set(
+  [
+    publicDomain,
+    'localhost',
+    '127.0.0.1',
+    ...(process.env.SHORTAPPS_HUB_ALLOWED_HOSTS ?? '')
+      .split(',')
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean),
+  ].filter(Boolean),
+)
 const registrationSecret = String(process.env.SHORTAPPS_HUB_REGISTRATION_SECRET ?? '').trim()
 const sessionTtlMs = Number(process.env.SHORTAPPS_HUB_SESSION_TTL_SECONDS ?? 30 * 24 * 60 * 60) * 1000
 const cookieSecure = process.env.SHORTAPPS_HUB_COOKIE_SECURE !== '0'
+const exposePublicStatus = process.env.SHORTAPPS_HUB_PUBLIC_STATUS === '1'
 const maxBodyBytes = 20 * 1024 * 1024
+const maxLoginBodyBytes = 8 * 1024
 const requestTimeoutMs = 30000
 const machineIdPattern = /^[a-z0-9_.-]{2,64}$/
+const allowedStaticFiles = new Set([
+  '/favicon.svg',
+  '/icons.svg',
+  '/manifest.webmanifest',
+  '/robots.txt',
+])
+const allowedApiRoutes = new Map([
+  ['/api/status', new Set(['GET', 'HEAD'])],
+  ['/api/config', new Set(['GET', 'HEAD'])],
+  ['/api/auth/status', new Set(['GET', 'HEAD'])],
+  ['/api/auth/logout', new Set(['POST'])],
+  ['/api/apps/launch', new Set(['POST'])],
+  ['/api/keyboard', new Set(['POST'])],
+])
 
 if (registrationSecret.length < 32) {
   console.error('SHORTAPPS_HUB_REGISTRATION_SECRET must contain at least 32 characters.')
@@ -20,6 +48,40 @@ if (registrationSecret.length < 32) {
 const machines = new Map()
 const sessions = new Map()
 const loginAttempts = new Map()
+
+function createSecurityHeaders() {
+  return {
+    'content-security-policy': [
+      "default-src 'self'",
+      "base-uri 'none'",
+      "form-action 'self'",
+      "frame-ancestors 'none'",
+      "object-src 'none'",
+      "img-src 'self' data: blob:",
+      "style-src 'self' 'unsafe-inline'",
+      "script-src 'self'",
+      "connect-src 'self'",
+      "manifest-src 'self'",
+    ].join('; '),
+    'cross-origin-opener-policy': 'same-origin',
+    'cross-origin-resource-policy': 'same-origin',
+    'origin-agent-cluster': '?1',
+    'permissions-policy': [
+      'accelerometer=()',
+      'camera=()',
+      'geolocation=()',
+      'gyroscope=()',
+      'magnetometer=()',
+      'microphone=()',
+      'payment=()',
+      'usb=()',
+    ].join(', '),
+    'referrer-policy': 'no-referrer',
+    'x-content-type-options': 'nosniff',
+    'x-frame-options': 'DENY',
+    'x-permitted-cross-domain-policies': 'none',
+  }
+}
 
 function normalizeMachineId(value = '') {
   return String(value)
@@ -41,6 +103,7 @@ function send(response, statusCode, body, headers = {}) {
   response.writeHead(statusCode, {
     'cache-control': 'no-store',
     ...headers,
+    ...createSecurityHeaders(),
   })
   response.end(body)
 }
@@ -68,10 +131,17 @@ function parseCookies(cookieHeader = '') {
   )
 }
 
-function createSession({ machineId, authToken }) {
+function getRequestUserAgent(request) {
+  return String(request.headers['user-agent'] ?? '').slice(0, 240)
+}
+
+function createSession({ machineId, authToken, request }) {
   const sessionId = randomBytes(32).toString('base64url')
   const expiresAt = Date.now() + sessionTtlMs
-  sessions.set(sessionId, { machineId, authToken, expiresAt })
+  const userAgentHash = createHash('sha256')
+    .update(getRequestUserAgent(request))
+    .digest('base64url')
+  sessions.set(sessionId, { machineId, authToken, expiresAt, userAgentHash })
 
   return { sessionId, expiresAt }
 }
@@ -88,6 +158,13 @@ function getSession(request) {
   const sessionId = parseCookies(request.headers.cookie).shortapps_hub_session
   const session = sessions.get(sessionId)
   if (!session || session.expiresAt <= Date.now()) return null
+  const userAgentHash = createHash('sha256')
+    .update(getRequestUserAgent(request))
+    .digest('base64url')
+  if (session.userAgentHash !== userAgentHash) {
+    sessions.delete(sessionId)
+    return null
+  }
 
   return { sessionId, ...session }
 }
@@ -124,6 +201,58 @@ function getClientIp(request) {
   return request.socket.remoteAddress ?? 'unknown'
 }
 
+function getRequestHostname(request) {
+  const forwardedHost = request.headers['x-forwarded-host']
+  const hostHeader =
+    typeof forwardedHost === 'string' && forwardedHost
+      ? forwardedHost
+      : request.headers.host
+  const hostValue = String(hostHeader ?? '').split(',')[0].trim().toLowerCase()
+  if (!hostValue) return ''
+  if (hostValue.startsWith('[')) return hostValue.slice(1).split(']')[0]
+  return hostValue.split(':')[0]
+}
+
+function isAllowedHost(request) {
+  if (allowedHostnames.size === 0) return true
+  return allowedHostnames.has(getRequestHostname(request))
+}
+
+function getExpectedOrigin(request) {
+  const hostname = getRequestHostname(request)
+  if (!hostname) return ''
+  return `${cookieSecure ? 'https' : 'http'}://${hostname}`
+}
+
+function hasTrustedOrigin(request) {
+  const origin = request.headers.origin
+  if (!origin) return true
+
+  try {
+    return new URL(origin).origin === getExpectedOrigin(request)
+  } catch {
+    return false
+  }
+}
+
+function isAllowedProxyRoute(url, method) {
+  const requestMethod = method === 'HEAD' ? 'GET' : method
+
+  if ((url.pathname === '/mobile' || url.pathname.startsWith('/mobile/')) && requestMethod === 'GET') {
+    return true
+  }
+
+  if (url.pathname.startsWith('/assets/') && requestMethod === 'GET') {
+    return true
+  }
+
+  if (allowedStaticFiles.has(url.pathname) && requestMethod === 'GET') {
+    return true
+  }
+
+  return allowedApiRoutes.get(url.pathname)?.has(method) ?? false
+}
+
 function isLoginRateLimited(request) {
   const ip = getClientIp(request)
   const now = Date.now()
@@ -137,14 +266,14 @@ function isLoginRateLimited(request) {
   return attempts.length > maxAttempts
 }
 
-function readRequestBody(request) {
+function readRequestBody(request, limitBytes = maxBodyBytes) {
   return new Promise((resolve, reject) => {
     const chunks = []
     let totalLength = 0
 
     request.on('data', (chunk) => {
       totalLength += chunk.length
-      if (totalLength > maxBodyBytes) {
+      if (totalLength > limitBytes) {
         reject(new Error('REQUEST_BODY_TOO_LARGE'))
         request.destroy()
         return
@@ -167,6 +296,12 @@ function sanitizeProxyHeaders(headers = {}) {
   delete nextHeaders['transfer-encoding']
   delete nextHeaders['content-length']
   delete nextHeaders.cookie
+  delete nextHeaders.authorization
+  delete nextHeaders['x-shortapps-auth']
+  delete nextHeaders['x-forwarded-for']
+  delete nextHeaders['x-forwarded-host']
+  delete nextHeaders['x-forwarded-proto']
+  delete nextHeaders['x-real-ip']
 
   return nextHeaders
 }
@@ -184,6 +319,10 @@ function sanitizeResponseHeaders(headers = {}) {
   delete nextHeaders.upgrade
   delete nextHeaders['set-cookie']
   delete nextHeaders['content-length']
+  delete nextHeaders['content-security-policy']
+  delete nextHeaders['x-frame-options']
+  delete nextHeaders['x-content-type-options']
+  delete nextHeaders['referrer-policy']
 
   return nextHeaders
 }
@@ -266,12 +405,17 @@ async function handleLogin(request, response) {
     return
   }
 
+  if (!hasTrustedOrigin(request)) {
+    sendLoginPage(response, { error: 'Origine de connexion refusee.' })
+    return
+  }
+
   if (isLoginRateLimited(request)) {
     sendLoginPage(response, { error: 'Trop de tentatives. Reessayez dans quelques minutes.' })
     return
   }
 
-  const body = await readRequestBody(request)
+  const body = await readRequestBody(request, maxLoginBodyBytes)
   const form = new URLSearchParams(body.toString('utf8'))
   const machineId = normalizeMachineId(form.get('machineId') ?? '')
   const password = String(form.get('password') ?? '')
@@ -295,7 +439,7 @@ async function handleLogin(request, response) {
       return
     }
 
-    const session = createSession({ machineId, authToken: authBody.token })
+    const session = createSession({ machineId, authToken: authBody.token, request })
     response.writeHead(303, {
       location: '/mobile',
       'set-cookie': createSessionCookie(session.sessionId, session.expiresAt),
@@ -308,6 +452,17 @@ async function handleLogin(request, response) {
 }
 
 async function handleProxy(request, response, session) {
+  const url = new URL(request.url, `http://${request.headers.host}`)
+  if (!isAllowedProxyRoute(url, request.method)) {
+    sendJson(response, 404, { error: 'NOT_FOUND' })
+    return
+  }
+
+  if (!hasTrustedOrigin(request)) {
+    sendJson(response, 403, { error: 'UNTRUSTED_ORIGIN' })
+    return
+  }
+
   const requestBody = await readRequestBody(request)
   const headers = sanitizeProxyHeaders(request.headers)
 
@@ -332,26 +487,47 @@ async function handleProxy(request, response, session) {
 
 async function handleHttp(request, response) {
   try {
+    if (!isAllowedHost(request)) {
+      sendJson(response, 421, { error: 'MISDIRECTED_REQUEST' })
+      return
+    }
+
     const url = new URL(request.url, `http://${request.headers.host}`)
 
     if (url.pathname === '/hub/health') {
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        sendJson(response, 405, { error: 'METHOD_NOT_ALLOWED' })
+        return
+      }
+
       sendJson(response, 200, { ok: true })
       return
     }
 
     if (url.pathname === '/hub/status') {
-      sendJson(response, 200, {
+      if (request.method !== 'GET' && request.method !== 'HEAD') {
+        sendJson(response, 405, { error: 'METHOD_NOT_ALLOWED' })
+        return
+      }
+
+      sendJson(response, 200, exposePublicStatus ? {
         ok: true,
         connectedMachines: machines.size,
-      })
+      } : { ok: true })
       return
     }
 
     if (url.pathname === '/hub/logout') {
+      if (request.method !== 'GET' && request.method !== 'POST') {
+        sendJson(response, 405, { error: 'METHOD_NOT_ALLOWED' })
+        return
+      }
+
       response.writeHead(303, {
         location: '/',
         'set-cookie': createExpiredCookie(),
         'cache-control': 'no-store',
+        ...createSecurityHeaders(),
       })
       response.end()
       return
@@ -372,13 +548,18 @@ async function handleHttp(request, response) {
       response.writeHead(303, {
         location: '/',
         'cache-control': 'no-store',
+        ...createSecurityHeaders(),
       })
       response.end()
       return
     }
 
     if (url.pathname === '/') {
-      response.writeHead(303, { location: '/mobile', 'cache-control': 'no-store' })
+      response.writeHead(303, {
+        location: '/mobile',
+        'cache-control': 'no-store',
+        ...createSecurityHeaders(),
+      })
       response.end()
       return
     }
@@ -403,6 +584,11 @@ const websocketServer = new WebSocketServer({
 })
 
 server.on('upgrade', (request, socket, head) => {
+  if (!isAllowedHost(request) || request.headers.origin) {
+    socket.destroy()
+    return
+  }
+
   const url = new URL(request.url, `http://${request.headers.host}`)
 
   if (url.pathname !== '/tunnel/pc') {

@@ -10,6 +10,21 @@ const MAX_RETRY_MS = 30000
 const REQUEST_TIMEOUT_MS = 30000
 const MAX_BODY_BYTES = 20 * 1024 * 1024
 const MAX_TUNNEL_PAYLOAD_BYTES = 24 * 1024 * 1024
+const allowedStaticFiles = new Set([
+  '/favicon.svg',
+  '/icons.svg',
+  '/manifest.webmanifest',
+  '/robots.txt',
+])
+const allowedApiRoutes = new Map([
+  ['/api/status', new Set(['GET', 'HEAD'])],
+  ['/api/config', new Set(['GET', 'HEAD'])],
+  ['/api/auth/status', new Set(['GET', 'HEAD'])],
+  ['/api/auth/login', new Set(['POST'])],
+  ['/api/auth/logout', new Set(['POST'])],
+  ['/api/apps/launch', new Set(['POST'])],
+  ['/api/keyboard', new Set(['POST'])],
+])
 
 let activeHubClient = null
 
@@ -64,6 +79,29 @@ function isSameHubConfig(left, right) {
     left?.tunnelUrl === right?.tunnelUrl &&
     left?.secret === right?.secret
   )
+}
+
+function isAllowedTunneledRequest(path = '/', method = 'GET') {
+  const requestMethod = method === 'HEAD' ? 'GET' : method
+
+  try {
+    const url = new URL(path, 'http://shortapps.local')
+    if ((url.pathname === '/mobile' || url.pathname.startsWith('/mobile/')) && requestMethod === 'GET') {
+      return true
+    }
+
+    if (url.pathname.startsWith('/assets/') && requestMethod === 'GET') {
+      return true
+    }
+
+    if (allowedStaticFiles.has(url.pathname) && requestMethod === 'GET') {
+      return true
+    }
+
+    return allowedApiRoutes.get(url.pathname)?.has(method) ?? false
+  } catch {
+    return false
+  }
 }
 
 function sanitizeRequestHeaders(headers = {}) {
@@ -245,7 +283,7 @@ class ShortAppsHubClient {
 
     const socketUrl = new URL(this.config.tunnelUrl)
     socketUrl.searchParams.set('machineId', this.config.machineId)
-    socketUrl.searchParams.set('version', '1.8.1')
+    socketUrl.searchParams.set('version', '0.9.1')
 
     const socket = new WebSocket(socketUrl, {
       handshakeTimeout: 10000,
@@ -314,6 +352,17 @@ class ShortAppsHubClient {
     if (message.type !== 'request' || !message.requestId) return
 
     try {
+      if (!isAllowedTunneledRequest(message.path, message.method ?? 'GET')) {
+        this.send({
+          type: 'response',
+          requestId: message.requestId,
+          statusCode: 404,
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+          body: Buffer.from(JSON.stringify({ error: 'HUB_ROUTE_NOT_ALLOWED' })).toString('base64'),
+        })
+        return
+      }
+
       const response = await forwardToLocalServer({
         localPort: this.localPort,
         method: message.method ?? 'GET',

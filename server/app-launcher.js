@@ -20,6 +20,14 @@ function parseArgumentString(value = '') {
 function runPowerShellStart(app, executable) {
   const command = [
     `$ErrorActionPreference = 'Stop'`,
+    `Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public static class Foreground {
+  [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+  [DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr hWnd, int nCmdShow);
+}
+"@`,
     `$filePath = ${psQuote(executable)}`,
     `$arguments = ${psQuote(app?.arguments ?? '')}`,
     `$workingDirectory = ${psQuote(app?.workingDirectory ?? '')}`,
@@ -28,7 +36,20 @@ function runPowerShellStart(app, executable) {
     `$startArgs = @{ FilePath = $filePath }`,
     `if ($arguments) { $startArgs.ArgumentList = $arguments }`,
     `if ($workingDirectory -and (Test-Path -LiteralPath $workingDirectory)) { $startArgs.WorkingDirectory = $workingDirectory }`,
-    `Start-Process @startArgs`,
+    `$process = Start-Process @startArgs -PassThru`,
+    `$processName = [System.IO.Path]::GetFileNameWithoutExtension($filePath)`,
+    `for ($i = 0; $i -lt 28; $i++) {`,
+    `  $candidates = @()`,
+    `  if ($process) { $process.Refresh(); $candidates += $process }`,
+    `  if ($processName) { $candidates += @(Get-Process -Name $processName -ErrorAction SilentlyContinue | Sort-Object StartTime -Descending) }`,
+    `  $target = $candidates | Where-Object { $_.MainWindowHandle -ne 0 } | Select-Object -First 1`,
+    `  if ($target) {`,
+    `    [Foreground]::ShowWindowAsync($target.MainWindowHandle, 9) | Out-Null`,
+    `    [Foreground]::SetForegroundWindow($target.MainWindowHandle) | Out-Null`,
+    `    break`,
+    `  }`,
+    `  Start-Sleep -Milliseconds 120`,
+    `}`,
   ].join('\n')
 
   return new Promise((resolve, reject) => {
@@ -101,7 +122,7 @@ export async function launchInstalledApp(app) {
   }
 
   const transport = executable.toLowerCase().endsWith('.exe')
-    ? await launchExecutableDirect(app, executable).catch(() => runPowerShellStart(app, executable))
+    ? await runPowerShellStart(app, executable).catch(() => launchExecutableDirect(app, executable))
     : await runPowerShellStart(app, executable)
 
   return {

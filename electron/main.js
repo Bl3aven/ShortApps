@@ -3,9 +3,25 @@ import { join } from 'node:path'
 
 let mainWindow
 let serverHandle
+const isServiceMode = process.argv.includes('--service') || process.argv.includes('--background-service')
+
+function configureDataDirectory() {
+  process.env.SHORTAPPS_DATA_DIR = join(app.getPath('userData'), 'data')
+  process.env.SHORTAPPS_DESKTOP_EXE = process.execPath
+}
+
+function isPortAlreadyInUse(error) {
+  return error?.code === 'EADDRINUSE' || String(error?.message ?? '').includes('EADDRINUSE')
+}
+
+async function startBackgroundServer() {
+  configureDataDirectory()
+  const { startLocalServer } = await import('../server/local-server.js')
+  serverHandle = await startLocalServer({ silent: isServiceMode })
+}
 
 async function createMainWindow() {
-  process.env.SHORTAPPS_DATA_DIR = join(app.getPath('userData'), 'data')
+  configureDataDirectory()
 
   mainWindow = new BrowserWindow({
     width: 1220,
@@ -38,10 +54,14 @@ async function createMainWindow() {
   await mainWindow.loadURL(`data:text/html;charset=utf-8,${startingMarkup}`)
 
   try {
-    const { startLocalServer } = await import('../server/local-server.js')
-    serverHandle = await startLocalServer()
+    await startBackgroundServer()
     await mainWindow.loadURL(serverHandle.desktopUrl)
   } catch (error) {
+    if (isPortAlreadyInUse(error)) {
+      await mainWindow.loadURL('http://127.0.0.1:56321')
+      return
+    }
+
     const message = encodeURIComponent(`
       <main style="font-family: Segoe UI, Arial, sans-serif; padding: 42px; color: #172033;">
         <h1>ShortApps n'a pas pu démarrer le serveur local</h1>
@@ -53,15 +73,20 @@ async function createMainWindow() {
   }
 }
 
-app.whenReady().then(createMainWindow).catch((error) => {
+app.whenReady().then(() => {
+  if (isServiceMode) return startBackgroundServer()
+  return createMainWindow()
+}).catch((error) => {
   console.error(error)
 })
 
 app.on('window-all-closed', () => {
+  if (isServiceMode) return
   if (process.platform !== 'darwin') app.quit()
 })
 
 app.on('activate', () => {
+  if (isServiceMode) return
   if (BrowserWindow.getAllWindows().length === 0) createMainWindow()
 })
 

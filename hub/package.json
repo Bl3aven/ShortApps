@@ -1,7 +1,7 @@
 {
   "name": "shortapps-hub",
   "private": true,
-  "version": "1.8.1",
+  "version": "0.9.1",
   "type": "module",
   "main": "server.js",
   "scripts": {

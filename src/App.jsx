@@ -31,7 +31,7 @@ import {
 import './App.css'
 
 const DEFAULT_PC_NAME = 'ShortApps PC'
-const APP_VERSION = '1.8.1'
+const APP_VERSION = '0.9.1'
 const HTTPS_SERVER_PORT = 56322
 const PcNameContext = createContext(DEFAULT_PC_NAME)
 const DEFAULT_NETWORK_EXPOSURE = {
@@ -480,6 +480,23 @@ const triggerHaptic = (duration = 12) => {
   return false
 }
 
+const isLandscapeViewport = () =>
+  typeof window !== 'undefined' &&
+  (window.matchMedia?.('(orientation: landscape)').matches || window.innerWidth > window.innerHeight)
+
+const formatClockTime = (date) =>
+  new Intl.DateTimeFormat('fr-FR', {
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(date)
+
+const formatClockDate = (date) =>
+  new Intl.DateTimeFormat('fr-FR', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+  }).format(date)
+
 const getStoredAuthToken = () => {
   if (typeof window === 'undefined') return ''
   return window.localStorage.getItem('shortapps.authToken') ?? ''
@@ -579,6 +596,13 @@ function App() {
   const [localServer, setLocalServer] = useState(() => getLocalServer())
   const [networkExposure, setNetworkExposure] = useState(DEFAULT_NETWORK_EXPOSURE)
   const [serverStatus, setServerStatus] = useState('checking')
+  const [serviceStatus, setServiceStatus] = useState({
+    supported: false,
+    installed: false,
+    running: false,
+    mode: 'scheduled-task',
+  })
+  const [serviceActionState, setServiceActionState] = useState('idle')
   const selectedPage = pages.find((page) => page.id === selectedPageId) ?? pages[0]
   const selectedApp = catalog.find((app) => app.id === selectedAppId) ?? catalog[0]
   const selectedWallpaper =
@@ -633,6 +657,35 @@ function App() {
         setServerStatus('offline')
       })
   }, [updateNetworkExposure])
+
+  const refreshServiceStatus = useCallback(() => {
+    return fetch('/api/service/status')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((status) => {
+        if (status) setServiceStatus(status)
+      })
+      .catch(() => {})
+  }, [])
+
+  const toggleBackgroundService = useCallback(async () => {
+    const shouldUninstall = serviceStatus.installed
+    setServiceActionState(shouldUninstall ? 'uninstalling' : 'installing')
+
+    try {
+      const response = await fetch(
+        shouldUninstall ? '/api/service/uninstall' : '/api/service/install',
+        { method: 'POST' },
+      )
+      const status = await response.json().catch(() => null)
+      if (!response.ok || !status) throw new Error(status?.error ?? 'SERVICE_ACTION_FAILED')
+      setServiceStatus(status)
+      setServiceActionState('saved')
+      window.setTimeout(() => setServiceActionState('idle'), 2200)
+    } catch {
+      setServiceActionState('failed')
+      window.setTimeout(() => setServiceActionState('idle'), 2600)
+    }
+  }, [serviceStatus.installed])
 
   const appsById = useMemo(() => {
     return catalog.reduce((acc, app) => {
@@ -691,6 +744,17 @@ function App() {
   useEffect(() => {
     refreshServerStatus().then(() => {})
   }, [refreshServerStatus])
+
+  useEffect(() => {
+    if (isMobileWebApp) return undefined
+
+    refreshServiceStatus()
+    const serviceTimer = window.setInterval(() => {
+      refreshServiceStatus()
+    }, 6000)
+
+    return () => window.clearInterval(serviceTimer)
+  }, [isMobileWebApp, refreshServiceStatus])
 
   useEffect(() => {
     if (isMobileWebApp) return undefined
@@ -1128,7 +1192,14 @@ function App() {
         <section className="desktop-window" aria-label="ShortApps">
           <TitleBar />
           <div className="window-layout">
-            <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} serverStatus={serverStatus} />
+            <Sidebar
+              activeTab={activeTab}
+              setActiveTab={setActiveTab}
+              serverStatus={serverStatus}
+              serviceStatus={serviceStatus}
+              serviceActionState={serviceActionState}
+              toggleBackgroundService={toggleBackgroundService}
+            />
             <main className="workspace">{renderContent()}</main>
           </div>
         </section>
@@ -1156,18 +1227,37 @@ function TitleBar() {
         <div className="brand-mark" aria-hidden="true" />
         <strong>ShortApps</strong>
       </div>
-      <div className="window-controls" aria-hidden="true">
-        <span />
-        <span />
-        <span />
-      </div>
+      <span className="version-pill">Préproduction {APP_VERSION}</span>
     </header>
   )
 }
 
-function Sidebar({ activeTab, setActiveTab, serverStatus }) {
+function Sidebar({
+  activeTab,
+  setActiveTab,
+  serverStatus,
+  serviceStatus,
+  serviceActionState,
+  toggleBackgroundService,
+}) {
   const pcName = useContext(PcNameContext)
   const isOnline = serverStatus !== 'offline'
+  const serviceBusy =
+    serviceActionState === 'installing' || serviceActionState === 'uninstalling'
+  const serviceLabel = !serviceStatus.supported
+    ? 'Windows requis'
+    : serviceBusy
+      ? 'Application...'
+      : serviceStatus.installed
+        ? 'Retirer le service'
+        : 'Installer le service'
+  const serviceStateLabel = !serviceStatus.supported
+    ? 'Service Windows indisponible'
+    : serviceStatus.running
+      ? 'Service actif'
+      : serviceStatus.installed
+        ? 'Service installé'
+        : 'Service non installé'
 
   return (
     <aside className="sidebar">
@@ -1194,6 +1284,22 @@ function Sidebar({ activeTab, setActiveTab, serverStatus }) {
           <span>{isOnline ? 'Serveur en ligne' : 'Serveur hors ligne'}</span>
         </div>
         <strong>{pcName}</strong>
+        <div className="status-line muted">
+          <span className={`online-dot ${serviceStatus.running ? '' : 'offline'}`} />
+          <span>{serviceStateLabel}</span>
+        </div>
+        <button
+          className={`service-button ${serviceStatus.installed ? 'installed' : ''}`}
+          type="button"
+          disabled={!serviceStatus.supported || serviceBusy}
+          onClick={toggleBackgroundService}
+        >
+          <Server size={15} />
+          {serviceActionState === 'saved' ? 'Service mis à jour' : serviceLabel}
+        </button>
+        {serviceActionState === 'failed' && (
+          <span className="service-error">Action impossible depuis cette session.</span>
+        )}
       </div>
     </aside>
   )
@@ -2381,6 +2487,10 @@ function MobileWebApp({ pages, wallpaper, settings }) {
   const [authState, setAuthState] = useState('checking')
   const [authPassword, setAuthPassword] = useState('')
   const [authError, setAuthError] = useState('')
+  const [sessionMenuOpen, setSessionMenuOpen] = useState(false)
+  const [clockVisible, setClockVisible] = useState(false)
+  const [clockDate, setClockDate] = useState(() => new Date())
+  const clockTouchStartY = useRef(null)
 
   useEffect(() => {
     fetch('/api/auth/status', {
@@ -2420,6 +2530,73 @@ function MobileWebApp({ pages, wallpaper, settings }) {
       setAuthError('Mot de passe incorrect ou serveur indisponible.')
       triggerHaptic(35)
     }
+  }
+
+  useEffect(() => {
+    if (!clockVisible) return undefined
+
+    const timer = window.setInterval(() => setClockDate(new Date()), 1000)
+    const hideTimer = window.setTimeout(() => setClockVisible(false), 4200)
+
+    return () => {
+      window.clearInterval(timer)
+      window.clearTimeout(hideTimer)
+    }
+  }, [clockVisible])
+
+  const logout = async () => {
+    triggerHaptic(12)
+    setSessionMenuOpen(false)
+    const authHeaders = createAuthHeaders()
+    window.localStorage.removeItem('shortapps.authToken')
+
+    await fetch('/api/auth/logout', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...authHeaders },
+      cache: 'no-store',
+    }).catch(() => {})
+
+    try {
+      const response = await fetch('/hub/health', { cache: 'no-store' })
+      const payload = await response.json().catch(() => null)
+      if (response.ok && payload?.ok) {
+        window.location.assign('/hub/logout')
+        return
+      }
+    } catch {
+      // Local mode has no hub logout route.
+    }
+
+    setAuthPassword('')
+    setAuthState('locked')
+  }
+
+  const handleMobileTouchStart = (event) => {
+    if (authState !== 'authenticated' || !isLandscapeViewport()) {
+      clockTouchStartY.current = null
+      return
+    }
+
+    const touch = event.touches?.[0]
+    clockTouchStartY.current = touch && touch.clientY <= 92 ? touch.clientY : null
+  }
+
+  const handleMobileTouchMove = (event) => {
+    if (clockTouchStartY.current === null) return
+
+    const touch = event.touches?.[0]
+    if (!touch) return
+
+    if (touch.clientY - clockTouchStartY.current > 46) {
+      clockTouchStartY.current = null
+      setClockDate(new Date())
+      setClockVisible(true)
+      triggerHaptic(8)
+    }
+  }
+
+  const handleMobileTouchEnd = () => {
+    clockTouchStartY.current = null
   }
 
   const handleScroll = (event) => {
@@ -2471,7 +2648,13 @@ function MobileWebApp({ pages, wallpaper, settings }) {
   }
 
   return (
-    <main className="mobile-webapp">
+    <main
+      className="mobile-webapp"
+      onTouchStart={handleMobileTouchStart}
+      onTouchMove={handleMobileTouchMove}
+      onTouchEnd={handleMobileTouchEnd}
+      onTouchCancel={handleMobileTouchEnd}
+    >
       <div
         className="mobile-wallpaper"
         style={{
@@ -2485,7 +2668,25 @@ function MobileWebApp({ pages, wallpaper, settings }) {
       />
 
       <header className="mobile-topbar">
-        <span>{pcName}</span>
+        <div className="mobile-session">
+          <button
+            className="mobile-pc-button"
+            type="button"
+            onClick={() => {
+              triggerHaptic(8)
+              setSessionMenuOpen((isOpen) => !isOpen)
+            }}
+          >
+            {pcName}
+          </button>
+          {sessionMenuOpen && (
+            <div className="mobile-session-popover">
+              <button type="button" onClick={logout}>
+                Déconnexion
+              </button>
+            </div>
+          )}
+        </div>
         <button
           className="mobile-mode-toggle"
           type="button"
@@ -2497,6 +2698,13 @@ function MobileWebApp({ pages, wallpaper, settings }) {
           ShortApps
         </button>
       </header>
+
+      {clockVisible && (
+        <section className="mobile-clock-sheet" aria-live="polite">
+          <strong>{formatClockTime(clockDate)}</strong>
+          <span>{formatClockDate(clockDate)}</span>
+        </section>
+      )}
 
       {authState !== 'authenticated' && (
         <section className="mobile-auth-panel">
@@ -2537,6 +2745,10 @@ function MobileWebApp({ pages, wallpaper, settings }) {
                     return app ? (
                       <button
                         key={`${page.id}-${app.id}`}
+                        style={{
+                          '--button-start': app.colors?.[0] ?? '#38bdf8',
+                          '--button-end': app.colors?.[1] ?? '#2563eb',
+                        }}
                         className={`mobile-shortcut ${
                           launchingAppId === app.id ? 'launching' : ''
                         } ${

@@ -22,6 +22,11 @@ import { sendKeyboardInput, warmKeyboardWorker } from './keyboard-controller.js'
 import { readConfig, writeConfig } from './config-store.js'
 import { ensureHttpsCertificate } from './https-cert.js'
 import { getHubClientStatus, refreshHubClientConfig, startHubClient } from './hub-client.js'
+import {
+  getWindowsServiceStatus,
+  installWindowsService,
+  uninstallWindowsService,
+} from './windows-service.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = resolve(__dirname, '..')
@@ -131,6 +136,11 @@ function cleanupSessions() {
   sessions.forEach((session, token) => {
     if (session.expiresAt <= now) sessions.delete(token)
   })
+}
+
+function destroySession(authToken) {
+  if (!authToken) return false
+  return sessions.delete(authToken)
 }
 
 function createSession() {
@@ -350,6 +360,93 @@ async function handleRequestAsync(request, response) {
       .catch((error) =>
         sendJson(response, error.statusCode ?? 500, {
           authenticated: false,
+          error: error.message,
+        }),
+      )
+    return
+  }
+
+  if (request.url.startsWith('/api/auth/logout')) {
+    if (request.method !== 'POST') {
+      sendJson(response, 405, { error: 'METHOD_NOT_ALLOWED' })
+      return
+    }
+
+    readJsonBody(request)
+      .catch(() => ({}))
+      .then((payload) => {
+        const authToken = getRequestAuthToken(request, payload)
+        const loggedOut = destroySession(authToken)
+        sendJson(response, 200, { loggedOut })
+      })
+      .catch((error) =>
+        sendJson(response, 500, {
+          loggedOut: false,
+          error: error.message,
+        }),
+      )
+    return
+  }
+
+  if (request.url.startsWith('/api/service/status')) {
+    if (!isDesktopClient(request)) {
+      sendJson(response, 403, { supported: false, error: 'DESKTOP_CONSOLE_REQUIRED' })
+      return
+    }
+
+    getWindowsServiceStatus()
+      .then((payload) => sendJson(response, 200, payload))
+      .catch((error) =>
+        sendJson(response, 500, {
+          supported: process.platform === 'win32',
+          installed: false,
+          running: false,
+          error: error.message,
+        }),
+      )
+    return
+  }
+
+  if (request.url.startsWith('/api/service/install')) {
+    if (request.method !== 'POST') {
+      sendJson(response, 405, { error: 'METHOD_NOT_ALLOWED' })
+      return
+    }
+
+    if (!isDesktopClient(request)) {
+      sendJson(response, 403, { installed: false, error: 'DESKTOP_CONSOLE_REQUIRED' })
+      return
+    }
+
+    installWindowsService()
+      .then((payload) => sendJson(response, 200, payload))
+      .catch((error) =>
+        sendJson(response, 500, {
+          installed: false,
+          running: false,
+          error: error.message,
+        }),
+      )
+    return
+  }
+
+  if (request.url.startsWith('/api/service/uninstall')) {
+    if (request.method !== 'POST') {
+      sendJson(response, 405, { error: 'METHOD_NOT_ALLOWED' })
+      return
+    }
+
+    if (!isDesktopClient(request)) {
+      sendJson(response, 403, { installed: false, error: 'DESKTOP_CONSOLE_REQUIRED' })
+      return
+    }
+
+    uninstallWindowsService()
+      .then((payload) => sendJson(response, 200, payload))
+      .catch((error) =>
+        sendJson(response, 500, {
+          installed: true,
+          running: false,
           error: error.message,
         }),
       )

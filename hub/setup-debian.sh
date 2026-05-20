@@ -73,6 +73,26 @@ findtime = 10m
 bantime = 1h
 EOF
 
+install -d -m 0755 /etc/ssh/sshd_config.d
+cat >/etc/ssh/sshd_config.d/99-shortapps-hardening.conf <<'EOF'
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+X11Forwarding no
+AllowTcpForwarding no
+AllowAgentForwarding no
+MaxAuthTries 3
+LoginGraceTime 20
+EOF
+
+install -d -m 0755 /etc/systemd/resolved.conf.d
+cat >/etc/systemd/resolved.conf.d/99-shortapps-no-llmnr.conf <<'EOF'
+[Resolve]
+LLMNR=no
+MulticastDNS=no
+EOF
+
 cat >"${NGINX_SITE}" <<EOF
 map \$http_upgrade \$connection_upgrade {
   default upgrade;
@@ -84,6 +104,13 @@ limit_req_zone \$binary_remote_addr zone=shortapps_login:10m rate=10r/m;
 upstream shortapps_hub_backend {
   server 127.0.0.1:${HUB_PORT};
   keepalive 32;
+}
+
+server {
+  listen 80 default_server;
+  listen [::]:80 default_server;
+  server_name _;
+  return 444;
 }
 
 server {
@@ -138,6 +165,13 @@ upstream shortapps_hub_backend {
 }
 
 server {
+  listen 80 default_server;
+  listen [::]:80 default_server;
+  server_name _;
+  return 444;
+}
+
+server {
   listen 80;
   listen [::]:80;
   server_name ${DOMAIN};
@@ -152,6 +186,18 @@ server {
 }
 
 server {
+  listen 443 ssl http2 default_server;
+  listen [::]:443 ssl http2 default_server;
+  server_name _;
+
+  ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+  ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+  ssl_protocols TLSv1.2 TLSv1.3;
+
+  return 444;
+}
+
+server {
   listen 443 ssl http2;
   listen [::]:443 ssl http2;
   server_name ${DOMAIN};
@@ -160,38 +206,64 @@ server {
   ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
   ssl_session_timeout 1d;
   ssl_session_cache shared:ShortAppsTLS:10m;
+  ssl_session_tickets off;
   ssl_protocols TLSv1.2 TLSv1.3;
   ssl_prefer_server_ciphers off;
 
   client_max_body_size 24m;
+  client_body_timeout 12s;
+  client_header_timeout 12s;
+  keepalive_timeout 20s;
+  large_client_header_buffers 2 8k;
   server_tokens off;
 
   add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
   add_header X-Content-Type-Options nosniff always;
   add_header Referrer-Policy no-referrer always;
   add_header X-Frame-Options DENY always;
+  add_header X-Permitted-Cross-Domain-Policies none always;
+
+  proxy_http_version 1.1;
+  proxy_set_header Host \$host;
+  proxy_set_header X-Real-IP \$remote_addr;
+  proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+  proxy_set_header X-Forwarded-Host \$host;
+  proxy_set_header X-Forwarded-Proto https;
+  proxy_hide_header X-Powered-By;
 
   location /hub/login {
     limit_req zone=shortapps_login burst=8 nodelay;
-    proxy_http_version 1.1;
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto https;
     proxy_pass http://shortapps_hub_backend;
   }
 
-  location / {
-    proxy_http_version 1.1;
-    proxy_set_header Host \$host;
-    proxy_set_header X-Real-IP \$remote_addr;
-    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto https;
+  location = /tunnel/pc {
     proxy_set_header Upgrade \$http_upgrade;
     proxy_set_header Connection \$connection_upgrade;
     proxy_read_timeout 86400;
     proxy_send_timeout 86400;
     proxy_pass http://shortapps_hub_backend;
+  }
+
+  location = / { proxy_pass http://shortapps_hub_backend; }
+  location = /mobile { proxy_pass http://shortapps_hub_backend; }
+  location ^~ /mobile/ { proxy_pass http://shortapps_hub_backend; }
+  location ^~ /assets/ { proxy_pass http://shortapps_hub_backend; }
+  location = /favicon.svg { proxy_pass http://shortapps_hub_backend; }
+  location = /icons.svg { proxy_pass http://shortapps_hub_backend; }
+  location = /manifest.webmanifest { proxy_pass http://shortapps_hub_backend; }
+  location = /robots.txt { proxy_pass http://shortapps_hub_backend; }
+  location = /hub/health { proxy_pass http://shortapps_hub_backend; }
+  location = /hub/status { proxy_pass http://shortapps_hub_backend; }
+  location = /hub/logout { proxy_pass http://shortapps_hub_backend; }
+  location = /api/status { proxy_pass http://shortapps_hub_backend; }
+  location = /api/config { proxy_pass http://shortapps_hub_backend; }
+  location = /api/auth/status { proxy_pass http://shortapps_hub_backend; }
+  location = /api/auth/logout { proxy_pass http://shortapps_hub_backend; }
+  location = /api/apps/launch { proxy_pass http://shortapps_hub_backend; }
+  location = /api/keyboard { proxy_pass http://shortapps_hub_backend; }
+
+  location / {
+    return 404;
   }
 }
 EOF
@@ -215,7 +287,15 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=${APP_DIR}
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+UMask=0077
 CapabilityBoundingSet=
 LockPersonality=true
 
@@ -232,6 +312,11 @@ fi
 chown -R "${APP_USER}:${APP_USER}" "${APP_DIR}"
 
 systemctl daemon-reload
+if command -v sshd >/dev/null 2>&1; then
+  sshd -t
+fi
+systemctl reload ssh || systemctl reload sshd || true
+systemctl restart systemd-resolved || true
 systemctl enable --now shortapps-hub
 systemctl enable --now nginx
 systemctl enable --now certbot.timer
