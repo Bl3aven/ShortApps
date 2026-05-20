@@ -31,7 +31,7 @@ import {
 import './App.css'
 
 const DEFAULT_PC_NAME = 'ShortApps PC'
-const APP_VERSION = '0.9.1'
+const APP_VERSION = '0.9.2'
 const HTTPS_SERVER_PORT = 56322
 const PcNameContext = createContext(DEFAULT_PC_NAME)
 const DEFAULT_NETWORK_EXPOSURE = {

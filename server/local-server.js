@@ -620,14 +620,8 @@ function listen(server, listenPort, host) {
   })
 }
 
-export async function startLocalServer({ host = '0.0.0.0', silent = false } = {}) {
-  const lan = getPreferredAddress()
-  const certificateAddresses = getLanInterfaces().map((entry) => entry.address)
-  const server = createLocalServer()
+async function startHttpsServerAsync({ certificateAddresses, lan, host, payload } = {}) {
   let httpsServer
-
-  await listen(server, port, host)
-  warmKeyboardWorker()
 
   try {
     const certificate = await ensureHttpsCertificate(
@@ -640,6 +634,15 @@ export async function startLocalServer({ host = '0.0.0.0', silent = false } = {}
       error: '',
       certificatePath: certificate.certificatePath,
     }
+
+    if (payload) {
+      payload.httpsServer = httpsServer
+      payload.httpsAvailable = true
+      payload.httpsError = ''
+      payload.certificatePath = certificate.certificatePath
+    }
+
+    return httpsServer
   } catch (error) {
     httpsServer?.close()
     httpsState = {
@@ -647,6 +650,33 @@ export async function startLocalServer({ host = '0.0.0.0', silent = false } = {}
       error: error.message,
       certificatePath: '',
     }
+
+    if (payload) {
+      payload.httpsServer = undefined
+      payload.httpsAvailable = false
+      payload.httpsError = error.message
+      payload.certificatePath = ''
+    }
+
+    return undefined
+  }
+}
+
+export async function startLocalServer({ host = '0.0.0.0', silent = false, deferHttps = false } = {}) {
+  const lan = getPreferredAddress()
+  const certificateAddresses = getLanInterfaces().map((entry) => entry.address)
+  const server = createLocalServer()
+  let httpsServer
+
+  await listen(server, port, host)
+  warmKeyboardWorker()
+
+  if (!deferHttps) {
+    httpsServer = await startHttpsServerAsync({
+      certificateAddresses,
+      lan,
+      host,
+    })
   }
 
   const config = await readConfig()
@@ -674,10 +704,24 @@ export async function startLocalServer({ host = '0.0.0.0', silent = false } = {}
     certificatePath: httpsState.certificatePath,
   }
 
+  if (deferHttps) {
+    startHttpsServerAsync({
+      certificateAddresses,
+      lan,
+      host,
+      payload,
+    }).then((httpsServer) => {
+      if (!httpsServer) return
+      if (!silent) console.log(`ShortApps certificate:  ${payload.certificatePath}`)
+    })
+  }
+
   if (!silent) {
     console.log(`ShortApps local server: ${payload.desktopUrl}`)
     console.log(`ShortApps mobile URL:    ${payload.networkUrl}`)
-    if (httpsState.available) {
+    if (deferHttps) {
+      console.log('ShortApps HTTPS:         initialisation en arrière-plan')
+    } else if (httpsState.available) {
       console.log(`ShortApps certificate:  ${payload.certificatePath}`)
     } else {
       console.warn(`ShortApps HTTPS disabled: ${httpsState.error}`)

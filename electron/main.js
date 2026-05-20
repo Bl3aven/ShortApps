@@ -1,9 +1,11 @@
 import { app, BrowserWindow, shell } from 'electron'
+import { request as httpRequest } from 'node:http'
 import { join } from 'node:path'
 
 let mainWindow
 let serverHandle
 const isServiceMode = process.argv.includes('--service') || process.argv.includes('--background-service')
+const desktopUrl = 'http://127.0.0.1:56321'
 
 function configureDataDirectory() {
   process.env.SHORTAPPS_DATA_DIR = join(app.getPath('userData'), 'data')
@@ -17,7 +19,71 @@ function isPortAlreadyInUse(error) {
 async function startBackgroundServer() {
   configureDataDirectory()
   const { startLocalServer } = await import('../server/local-server.js')
-  serverHandle = await startLocalServer({ silent: isServiceMode })
+  serverHandle = await startLocalServer({ silent: isServiceMode, deferHttps: true })
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
+}
+
+function probeDesktopServer(url = desktopUrl) {
+  return new Promise((resolve) => {
+    const statusUrl = new URL('/api/status', url)
+    const request = httpRequest(
+      statusUrl,
+      {
+        method: 'GET',
+        timeout: 800,
+        headers: {
+          'user-agent': 'ShortApps Electron Startup Probe',
+        },
+      },
+      (response) => {
+        response.resume()
+        resolve(response.statusCode === 200)
+      },
+    )
+
+    request.on('timeout', () => {
+      request.destroy()
+      resolve(false)
+    })
+    request.on('error', () => resolve(false))
+    request.end()
+  })
+}
+
+async function waitForDesktopServer(url = desktopUrl, timeoutMs = 10000) {
+  const startedAt = Date.now()
+
+  while (Date.now() - startedAt < timeoutMs) {
+    if (await probeDesktopServer(url)) return true
+    await delay(250)
+  }
+
+  return false
+}
+
+async function showStartupError(error) {
+  const message = encodeURIComponent(`
+    <main style="font-family: Segoe UI, Arial, sans-serif; padding: 42px; color: #172033;">
+      <h1>ShortApps n'a pas pu démarrer le serveur local</h1>
+      <p>L'interface s'est ouverte en mode erreur pour éviter une fenêtre invisible.</p>
+      <pre style="white-space: pre-wrap; padding: 18px; border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc;">${error.stack ?? error.message}</pre>
+    </main>
+  `)
+  await mainWindow.loadURL(`data:text/html;charset=utf-8,${message}`)
+}
+
+async function loadDesktopWhenReady(url = desktopUrl) {
+  const ready = await waitForDesktopServer(url)
+  if (!ready) {
+    throw new Error(`SHORTAPPS_LOCAL_SERVER_NOT_READY: ${url}`)
+  }
+
+  await mainWindow.loadURL(url)
 }
 
 async function createMainWindow() {
@@ -55,21 +121,18 @@ async function createMainWindow() {
 
   try {
     await startBackgroundServer()
-    await mainWindow.loadURL(serverHandle.desktopUrl)
+    await loadDesktopWhenReady(serverHandle.desktopUrl)
   } catch (error) {
     if (isPortAlreadyInUse(error)) {
-      await mainWindow.loadURL('http://127.0.0.1:56321')
+      try {
+        await loadDesktopWhenReady(desktopUrl)
+      } catch (existingServerError) {
+        await showStartupError(existingServerError)
+      }
       return
     }
 
-    const message = encodeURIComponent(`
-      <main style="font-family: Segoe UI, Arial, sans-serif; padding: 42px; color: #172033;">
-        <h1>ShortApps n'a pas pu démarrer le serveur local</h1>
-        <p>L'interface s'est ouverte en mode erreur pour éviter une fenêtre invisible.</p>
-        <pre style="white-space: pre-wrap; padding: 18px; border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc;">${error.stack ?? error.message}</pre>
-      </main>
-    `)
-    await mainWindow.loadURL(`data:text/html;charset=utf-8,${message}`)
+    await showStartupError(error)
   }
 }
 
