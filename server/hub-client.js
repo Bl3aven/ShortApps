@@ -245,7 +245,7 @@ class ShortAppsHubClient {
 
     const socketUrl = new URL(this.config.tunnelUrl)
     socketUrl.searchParams.set('machineId', this.config.machineId)
-    socketUrl.searchParams.set('version', '1.8.0')
+    socketUrl.searchParams.set('version', '1.8.1')
 
     const socket = new WebSocket(socketUrl, {
       handshakeTimeout: 10000,
