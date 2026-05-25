@@ -14,6 +14,7 @@ import {
   Link,
   Lock,
   Monitor,
+  Moon,
   Network,
   Plus,
   RefreshCcw,
@@ -24,6 +25,7 @@ import {
   Settings,
   ShieldCheck,
   Smartphone,
+  Sun,
   Text,
   Trash2,
   X,
@@ -45,6 +47,12 @@ const DEFAULT_HUB_SETTINGS = {
   machineId: '',
   secret: '',
 }
+const DEFAULT_THEME_MODE = 'system'
+const THEME_OPTIONS = [
+  { id: 'system', label: 'Systeme', icon: Monitor },
+  { id: 'light', label: 'Clair', icon: Sun },
+  { id: 'dark', label: 'Sombre', icon: Moon },
+]
 const NUMPAD_ROWS = [
   [
     { key: '/', label: '/' },
@@ -443,6 +451,17 @@ const normalizeHubSettings = (settings = {}) => ({
   secret: typeof settings.secret === 'string' ? settings.secret : '',
 })
 
+const normalizeThemeMode = (value = DEFAULT_THEME_MODE) =>
+  THEME_OPTIONS.some((option) => option.id === value) ? value : DEFAULT_THEME_MODE
+
+const getSystemTheme = () =>
+  typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches
+    ? 'dark'
+    : 'light'
+
+const resolveThemeMode = (themeMode = DEFAULT_THEME_MODE) =>
+  normalizeThemeMode(themeMode) === 'system' ? getSystemTheme() : normalizeThemeMode(themeMode)
+
 const normalizeNetworkExposure = (exposure = {}) => ({
   mode: exposure.mode === 'selected' ? 'selected' : 'all',
   selectedInterfaceIds: Array.isArray(exposure.selectedInterfaceIds)
@@ -588,6 +607,8 @@ function App() {
   const [wallpaperFilter, setWallpaperFilter] = useState('Tous')
   const [publicAccessUrl, setPublicAccessUrl] = usePersistentState('shortapps.publicAccessUrl', '')
   const [hubSettings, setHubSettings] = usePersistentState('shortapps.hubSettings', DEFAULT_HUB_SETTINGS)
+  const [themeMode, setThemeMode] = usePersistentState('shortapps.themeMode', DEFAULT_THEME_MODE)
+  const [resolvedTheme, setResolvedTheme] = useState(() => resolveThemeMode(themeMode))
   const [scanState, setScanState] = useState('idle')
   const [validationState, setValidationState] = useState('idle')
   const [configReady, setConfigReady] = useState(false)
@@ -719,6 +740,7 @@ function App() {
           if (config.networkExposure) updateNetworkExposure(config.networkExposure)
           if (typeof config.publicAccessUrl === 'string') setPublicAccessUrl(config.publicAccessUrl)
           if (config.hub) setHubSettings(normalizeHubSettings(config.hub))
+          if (config.themeMode) setThemeMode(normalizeThemeMode(config.themeMode))
         }
 
         setConfigReady(true)
@@ -738,8 +760,32 @@ function App() {
     setPages,
     setSelectedWallpaperId,
     setWallpaperSettings,
+    setThemeMode,
     updateNetworkExposure,
   ])
+
+  useEffect(() => {
+    const applyTheme = () => setResolvedTheme(resolveThemeMode(themeMode))
+    applyTheme()
+
+    if (normalizeThemeMode(themeMode) !== 'system' || typeof window === 'undefined') {
+      return undefined
+    }
+
+    const mediaQuery = window.matchMedia?.('(prefers-color-scheme: dark)')
+    if (!mediaQuery) return undefined
+
+    mediaQuery.addEventListener?.('change', applyTheme)
+    return () => mediaQuery.removeEventListener?.('change', applyTheme)
+  }, [themeMode])
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+
+    document.documentElement.dataset.theme = resolvedTheme
+    document.documentElement.dataset.themeMode = normalizeThemeMode(themeMode)
+    document.documentElement.style.colorScheme = resolvedTheme
+  }, [resolvedTheme, themeMode])
 
   useEffect(() => {
     refreshServerStatus().then(() => {})
@@ -796,6 +842,7 @@ function App() {
             networkExposure,
             publicAccessUrl,
             hub: normalizeHubSettings(hubSettings),
+            themeMode: normalizeThemeMode(themeMode),
           },
         }),
       }).catch(() => {})
@@ -810,6 +857,7 @@ function App() {
     pages,
     publicAccessUrl,
     selectedWallpaperId,
+    themeMode,
     wallpaperSettings,
   ])
 
@@ -1148,6 +1196,9 @@ function App() {
           networkExposure={networkExposure}
           setNetworkExposure={updateNetworkExposure}
           refreshServerStatus={refreshServerStatus}
+          themeMode={themeMode}
+          setThemeMode={setThemeMode}
+          resolvedTheme={resolvedTheme}
         />
       )
     }
@@ -1188,7 +1239,7 @@ function App() {
 
   return (
     <PcNameContext.Provider value={pcName}>
-      <div className="app-background">
+      <div className="app-background" data-theme={resolvedTheme}>
         <section className="desktop-window" aria-label="ShortApps">
           <TitleBar />
           <div className="window-layout">
@@ -1977,6 +2028,9 @@ function SettingsView({
   networkExposure,
   setNetworkExposure,
   refreshServerStatus,
+  themeMode,
+  setThemeMode,
+  resolvedTheme,
 }) {
   const pcName = useContext(PcNameContext)
   const normalizedExposure = normalizeNetworkExposure(networkExposure)
@@ -2004,6 +2058,18 @@ function SettingsView({
       normalizedHubSettings.secret.trim(),
   )
   const hubStatus = localServer.hub ?? { enabled: false, connected: false, state: 'disabled' }
+  const hubStatusTone = hubStatus.connected ? 'connected' : hubStatus.enabled ? 'pending' : 'disabled'
+  const hubStatusLabel = hubStatus.connected
+    ? 'Connecte'
+    : hubStatus.enabled
+      ? hubStatus.state || 'Connexion en cours'
+      : 'Desactive'
+  const hubStatusDetail = hubStatus.connected
+    ? `Machine ${hubStatus.machineId || normalizedHubSettings.machineId || 'ShortApps'} en ligne`
+    : hubStatus.enabled
+      ? hubStatus.lastError || 'Le tunnel local attend une connexion au hub.'
+      : 'Le hub distant est coupe pour ce PC.'
+  const HubStatusIcon = hubStatus.connected ? ShieldCheck : hubStatus.enabled ? RefreshCw : X
   const [authStatus, setAuthStatus] = useState({ configured: false })
   const [password, setPassword] = useState('')
   const [passwordConfirm, setPasswordConfirm] = useState('')
@@ -2164,6 +2230,33 @@ function SettingsView({
           <input value={pcName} readOnly />
         </Field>
 
+        <DividerTitle icon={Monitor} title="Apparence" />
+        <div className="theme-settings">
+          <div className="segmented full theme-segmented">
+            {THEME_OPTIONS.map((option) => {
+              const Icon = option.icon
+
+              return (
+                <button
+                  key={option.id}
+                  type="button"
+                  className={normalizeThemeMode(themeMode) === option.id ? 'active' : ''}
+                  onClick={() => setThemeMode(option.id)}
+                >
+                  <Icon size={16} />
+                  {option.label}
+                </button>
+              )
+            })}
+          </div>
+          <div className="inline-info">
+            <Info size={17} />
+            <span>
+              Theme actif : {resolvedTheme === 'dark' ? 'sombre' : 'clair'}.
+            </span>
+          </div>
+        </div>
+
         <DividerTitle icon={Server} title="Serveur local" />
         <div className="server-grid">
           <Field label="Adresse locale">
@@ -2285,6 +2378,14 @@ function SettingsView({
 
         <DividerTitle icon={Network} title="Hub distant" />
         <div className="hub-settings">
+          <div className={`hub-status-strip ${hubStatusTone}`}>
+            <HubStatusIcon size={18} />
+            <div>
+              <span>Etat actuel</span>
+              <strong>{hubStatusLabel}</strong>
+              <small>{hubStatusDetail}</small>
+            </div>
+          </div>
           <ToggleRow
             label="Connecter ce PC au hub ShortApps"
             checked={normalizedHubSettings.enabled}
@@ -2423,6 +2524,12 @@ function SettingsView({
             <div className="inline-info validation-warning">
               <Info size={17} />
               <span>Impossible d'enregistrer le mot de passe depuis cette session.</span>
+            </div>
+          )}
+          {passwordSaveState === 'saved' && (
+            <div className="inline-info validation-success">
+              <Check size={17} />
+              <span>Mot de passe mobile enregistre. Les prochaines connexions utiliseront ce nouveau mot de passe.</span>
             </div>
           )}
           <button className="primary-button full-width" type="button" onClick={savePassword}>

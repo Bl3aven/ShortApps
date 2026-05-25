@@ -201,6 +201,21 @@ function getClientIp(request) {
   return request.socket.remoteAddress ?? 'unknown'
 }
 
+function logLoginEvent(request, outcome, details = {}) {
+  const payload = {
+    event: 'hub_login',
+    outcome,
+    ip: getClientIp(request),
+    machineId: details.machineId ?? '',
+    statusCode: details.statusCode,
+    reason: details.reason,
+    origin: String(request.headers.origin ?? '').slice(0, 160),
+    userAgent: getRequestUserAgent(request).slice(0, 120),
+  }
+
+  console.info(JSON.stringify(payload))
+}
+
 function getRequestHostname(request) {
   const forwardedHost = request.headers['x-forwarded-host']
   const hostHeader =
@@ -227,9 +242,20 @@ function getExpectedOrigin(request) {
 function hasTrustedOrigin(request) {
   const origin = request.headers.origin
   if (!origin) return true
+  if (origin === 'null') return true
 
   try {
-    return new URL(origin).origin === getExpectedOrigin(request)
+    const originUrl = new URL(origin)
+    if (originUrl.protocol !== 'https:' && originUrl.protocol !== 'http:') return false
+
+    const originHostname = originUrl.hostname.toLowerCase()
+    const requestHostname = getRequestHostname(request)
+
+    return (
+      originUrl.origin === getExpectedOrigin(request) ||
+      originHostname === requestHostname ||
+      allowedHostnames.has(originHostname)
+    )
   } catch {
     return false
   }
@@ -327,9 +353,20 @@ function sanitizeResponseHeaders(headers = {}) {
   return nextHeaders
 }
 
+function escapeHtml(value = '') {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+}
+
 function sendLoginPage(response, { machineId = '', error = '' } = {}) {
-  const safeMachineId = machineId.replace(/"/g, '&quot;')
-  const safeError = error ? `<p class="error">${error}</p>` : ''
+  const safeMachineId = escapeHtml(machineId)
+  const safeError = error
+    ? `<div class="alert" role="alert"><strong>Connexion refusee</strong><span>${escapeHtml(error)}</span></div>`
+    : ''
 
   send(
     response,
@@ -341,35 +378,405 @@ function sendLoginPage(response, { machineId = '', error = '' } = {}) {
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>ShortApps Hub</title>
   <style>
-    :root { color-scheme: dark; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: radial-gradient(circle at 20% 15%, #173766, #071224 52%, #020817); color: #fff; }
-    main { width: min(420px, calc(100vw - 32px)); padding: 30px; border: 1px solid rgba(255,255,255,.18); border-radius: 18px; background: rgba(10,18,34,.72); box-shadow: 0 28px 80px rgba(0,0,0,.36); backdrop-filter: blur(18px); }
-    h1 { margin: 0 0 8px; font-size: 28px; }
-    p { margin: 0 0 22px; color: rgba(255,255,255,.72); line-height: 1.45; }
-    label { display: grid; gap: 8px; margin-top: 14px; color: rgba(255,255,255,.74); font-size: 13px; }
-    input { min-height: 48px; padding: 0 14px; border: 1px solid rgba(255,255,255,.18); border-radius: 12px; background: rgba(255,255,255,.10); color: #fff; font-size: 16px; }
-    button { width: 100%; min-height: 50px; margin-top: 20px; border: 0; border-radius: 12px; background: linear-gradient(180deg, #3b82ff, #155dfc); color: #fff; font-size: 16px; font-weight: 800; box-shadow: 0 14px 36px rgba(37,99,235,.38); }
-    .error { margin: 12px 0 0; color: #fecaca; }
-    small { display: block; margin-top: 18px; color: rgba(255,255,255,.5); }
+    :root {
+      color-scheme: light dark;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f4f7fb;
+      color: #111827;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      display: grid;
+      place-items: center;
+      padding: 28px;
+      overflow-x: hidden;
+      background:
+        linear-gradient(135deg, rgba(18, 98, 255, 0.08), transparent 36%),
+        linear-gradient(315deg, rgba(22, 163, 74, 0.08), transparent 32%),
+        #f4f7fb;
+      color: #111827;
+    }
+
+    .shell {
+      width: min(960px, 100%);
+      max-width: 100%;
+      min-height: 560px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.04fr) minmax(360px, 0.86fr);
+      overflow: hidden;
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.92);
+      box-shadow: 0 28px 90px rgba(15, 23, 42, 0.18);
+    }
+
+    .brand-panel {
+      position: relative;
+      display: grid;
+      align-content: space-between;
+      gap: 36px;
+      padding: 38px;
+      background:
+        linear-gradient(150deg, rgba(15, 23, 42, 0.96), rgba(20, 31, 52, 0.96)),
+        #111827;
+      color: #fff;
+    }
+
+    .brand-panel::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      opacity: 0.24;
+      background-image:
+        linear-gradient(rgba(255,255,255,0.12) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.12) 1px, transparent 1px);
+      background-size: 34px 34px;
+      mask-image: linear-gradient(135deg, #000 0%, transparent 76%);
+      pointer-events: none;
+    }
+
+    .brand-panel > * { position: relative; }
+
+    .logo {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      color: #f8fafc;
+      font-weight: 800;
+      letter-spacing: 0;
+    }
+
+    .logo-mark {
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      border-radius: 8px;
+      background: #1262ff;
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.18);
+    }
+
+    .logo-mark svg { width: 22px; height: 22px; }
+
+    .hero h1 {
+      max-width: 460px;
+      margin: 0 0 14px;
+      font-size: clamp(34px, 5vw, 54px);
+      line-height: 0.98;
+      letter-spacing: 0;
+      overflow-wrap: break-word;
+    }
+
+    .hero p {
+      max-width: 470px;
+      margin: 0;
+      color: rgba(226, 232, 240, 0.78);
+      font-size: 16px;
+      line-height: 1.55;
+    }
+
+    .signal-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .signal {
+      min-width: 0;
+      min-height: 86px;
+      padding: 14px;
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 8px;
+      background: rgba(255,255,255,0.06);
+    }
+
+    .signal span {
+      display: block;
+      margin-bottom: 8px;
+      color: rgba(226, 232, 240, 0.62);
+      font-size: 12px;
+    }
+
+    .signal strong {
+      display: block;
+      color: #fff;
+      font-size: 14px;
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+
+    .login-panel {
+      display: grid;
+      align-content: center;
+      padding: 42px;
+      background: #fff;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      width: fit-content;
+      margin-bottom: 18px;
+      padding: 7px 10px;
+      border: 1px solid rgba(18, 98, 255, 0.18);
+      border-radius: 999px;
+      background: rgba(239, 246, 255, 0.86);
+      color: #1d4ed8;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: #16a34a;
+      box-shadow: 0 0 0 4px rgba(22, 163, 74, 0.14);
+    }
+
+    h2 {
+      margin: 0 0 8px;
+      color: #0f172a;
+      font-size: 28px;
+      line-height: 1.12;
+      letter-spacing: 0;
+    }
+
+    .intro {
+      margin: 0 0 24px;
+      color: #64748b;
+      line-height: 1.5;
+    }
+
+    form { display: grid; gap: 14px; }
+
+    label {
+      display: grid;
+      gap: 7px;
+      color: #475569;
+      font-size: 13px;
+      font-weight: 760;
+    }
+
+    input {
+      width: 100%;
+      min-height: 48px;
+      padding: 0 13px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      background: #fff;
+      color: #0f172a;
+      font-size: 16px;
+      outline: none;
+      transition: border-color 150ms ease, box-shadow 150ms ease;
+    }
+
+    input:focus {
+      border-color: #1262ff;
+      box-shadow: 0 0 0 4px rgba(18, 98, 255, 0.14);
+    }
+
+    button {
+      width: 100%;
+      min-height: 50px;
+      margin-top: 4px;
+      border: 0;
+      border-radius: 8px;
+      background: #1262ff;
+      color: #fff;
+      font-size: 16px;
+      font-weight: 850;
+      cursor: pointer;
+      box-shadow: 0 14px 34px rgba(18, 98, 255, 0.25);
+    }
+
+    button:hover { background: #0b55e8; }
+
+    .alert {
+      display: grid;
+      gap: 3px;
+      padding: 11px 12px;
+      border: 1px solid rgba(220, 38, 38, 0.22);
+      border-radius: 8px;
+      background: #fef2f2;
+      color: #991b1b;
+      font-size: 13px;
+    }
+
+    .alert strong { font-size: 13px; }
+    .alert span { line-height: 1.35; }
+
+    .help {
+      margin: 18px 0 0;
+      color: #64748b;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    @media (max-width: 820px) {
+      body {
+        align-items: start;
+        padding: 0;
+      }
+
+      .shell {
+        width: 100%;
+        min-height: 100vh;
+        grid-template-columns: 1fr;
+        border-width: 0;
+        border-radius: 0;
+      }
+
+      .brand-panel {
+        min-height: 0;
+        gap: 22px;
+        padding: 24px;
+      }
+
+      .hero h1 {
+        margin-bottom: 10px;
+        font-size: 30px;
+      }
+
+      .hero p {
+        font-size: 14px;
+      }
+
+      .signal-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .signal {
+        min-height: 64px;
+        padding: 10px;
+      }
+
+      .signal span {
+        margin-bottom: 5px;
+        font-size: 11px;
+      }
+
+      .signal strong {
+        font-size: 12px;
+      }
+
+      .login-panel {
+        align-content: start;
+        padding: 24px;
+      }
+    }
+
+    @media (max-width: 520px) {
+      .signal-grid { display: none; }
+
+      .brand-panel > *,
+      .login-panel > * {
+        width: min(342px, 100%);
+        max-width: min(342px, 100%);
+      }
+    }
+
+    @media (max-width: 340px) {
+      h2 { font-size: 25px; }
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root { background: #101114; color: #f4f4f5; }
+
+      body {
+        background:
+          linear-gradient(135deg, rgba(18, 98, 255, 0.13), transparent 36%),
+          linear-gradient(315deg, rgba(34, 197, 94, 0.10), transparent 32%),
+          #101114;
+      }
+
+      .shell {
+        border-color: rgba(148, 163, 184, 0.2);
+        background: rgba(22, 24, 29, 0.94);
+        box-shadow: 0 28px 90px rgba(0, 0, 0, 0.42);
+      }
+
+      .brand-panel {
+        background:
+          linear-gradient(150deg, rgba(8, 12, 22, 0.98), rgba(21, 30, 47, 0.98)),
+          #0b1020;
+      }
+
+      .login-panel { background: #17191f; }
+      h2 { color: #f4f4f5; }
+      .intro, .help, label { color: #a6adba; }
+      .eyebrow {
+        border-color: rgba(96, 165, 250, 0.22);
+        background: rgba(29, 78, 216, 0.16);
+        color: #93c5fd;
+      }
+
+      input {
+        border-color: rgba(148, 163, 184, 0.24);
+        background: rgba(31, 33, 39, 0.86);
+        color: #f4f4f5;
+      }
+
+      .alert {
+        border-color: rgba(248, 113, 113, 0.26);
+        background: rgba(127, 29, 29, 0.24);
+        color: #fecaca;
+      }
+    }
   </style>
 </head>
 <body>
-  <main>
-    <h1>ShortApps</h1>
-    <p>Connectez-vous a une machine distante via le hub securise.</p>
-    <form method="post" action="/hub/login">
-      <label>
-        ID machine
-        <input name="machineId" value="${safeMachineId}" placeholder="moodbeast" autocapitalize="none" autocomplete="username" required />
-      </label>
-      <label>
-        Mot de passe
-        <input name="password" type="password" autocomplete="current-password" required />
-      </label>
-      ${safeError}
-      <button type="submit">Ouvrir ShortApps</button>
-    </form>
-    <small>Le mot de passe est verifie par le PC distant via le tunnel sortant.</small>
+  <main class="shell">
+    <section class="brand-panel" aria-label="ShortApps Hub">
+      <div class="logo">
+        <span class="logo-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none">
+            <path d="M7 8.5h10M7 12h7M7 15.5h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            <path d="M6.5 4.5h11A2.5 2.5 0 0 1 20 7v10a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 17V7a2.5 2.5 0 0 1 2.5-2.5Z" stroke="currentColor" stroke-width="2"/>
+          </svg>
+        </span>
+        <span>ShortApps Hub</span>
+      </div>
+
+      <div class="hero">
+        <h1>Acces distant securise.</h1>
+        <p>Le portail relaie la session vers votre PC via un tunnel sortant. Le mot de passe reste verifie directement par la machine cible.</p>
+      </div>
+
+      <div class="signal-grid" aria-label="Etat de connexion">
+        <div class="signal"><span>Transport</span><strong>HTTPS public</strong></div>
+        <div class="signal"><span>Tunnel</span><strong>Sortant PC</strong></div>
+        <div class="signal"><span>Session</span><strong>Jeton temporaire</strong></div>
+      </div>
+    </section>
+
+    <section class="login-panel" aria-label="Connexion">
+      <span class="eyebrow">Hub operationnel</span>
+      <h2>Connexion ShortApps</h2>
+      <p class="intro">Choisissez la machine puis saisissez le mot de passe mobile configure sur ce PC.</p>
+
+      <form method="post" action="/hub/login">
+        <label>
+          ID machine
+          <input name="machineId" value="${safeMachineId}" placeholder="moodbeast" autocapitalize="none" autocomplete="username" spellcheck="false" required />
+        </label>
+        <label>
+          Mot de passe
+          <input name="password" type="password" autocomplete="current-password" required />
+        </label>
+        ${safeError}
+        <button type="submit">Ouvrir le dashboard</button>
+      </form>
+
+      <p class="help">Aucun secret hub n'est demande ici. Utilisez uniquement le mot de passe mobile ShortApps.</p>
+    </section>
   </main>
 </body>
 </html>`,
@@ -406,11 +813,13 @@ async function handleLogin(request, response) {
   }
 
   if (!hasTrustedOrigin(request)) {
+    logLoginEvent(request, 'rejected', { reason: 'UNTRUSTED_ORIGIN' })
     sendLoginPage(response, { error: 'Origine de connexion refusee.' })
     return
   }
 
   if (isLoginRateLimited(request)) {
+    logLoginEvent(request, 'rejected', { reason: 'RATE_LIMITED' })
     sendLoginPage(response, { error: 'Trop de tentatives. Reessayez dans quelques minutes.' })
     return
   }
@@ -421,6 +830,7 @@ async function handleLogin(request, response) {
   const password = String(form.get('password') ?? '')
 
   if (!machineIdPattern.test(machineId) || !password) {
+    logLoginEvent(request, 'rejected', { machineId, reason: 'INVALID_FORM' })
     sendLoginPage(response, { machineId, error: 'ID machine ou mot de passe invalide.' })
     return
   }
@@ -435,18 +845,29 @@ async function handleLogin(request, response) {
     const authBody = JSON.parse(Buffer.from(authResponse.body ?? '', 'base64').toString('utf8'))
 
     if (authResponse.statusCode !== 200 || !authBody?.token) {
+      logLoginEvent(request, 'rejected', {
+        machineId,
+        statusCode: authResponse.statusCode,
+        reason: authBody?.error ?? 'MACHINE_AUTH_REJECTED',
+      })
       sendLoginPage(response, { machineId, error: 'Connexion refusee par la machine.' })
       return
     }
 
     const session = createSession({ machineId, authToken: authBody.token, request })
+    logLoginEvent(request, 'accepted', { machineId, statusCode: authResponse.statusCode })
     response.writeHead(303, {
       location: '/mobile',
       'set-cookie': createSessionCookie(session.sessionId, session.expiresAt),
       'cache-control': 'no-store',
     })
     response.end()
-  } catch {
+  } catch (error) {
+    logLoginEvent(request, 'rejected', {
+      machineId,
+      statusCode: error.statusCode,
+      reason: error.message || 'MACHINE_UNAVAILABLE',
+    })
     sendLoginPage(response, { machineId, error: "Machine indisponible ou mot de passe refuse." })
   }
 }

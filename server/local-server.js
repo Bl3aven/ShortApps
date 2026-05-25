@@ -66,11 +66,11 @@ function isDesktopClient(request) {
   const clientIp = normalizeRemoteAddress(request.socket.remoteAddress)
   const host = getRequestHostAddress(request)
   const userAgent = request.headers['user-agent'] ?? ''
+  const isLoopbackBrowser = clientIp === '127.0.0.1' && (host === '127.0.0.1' || host === 'localhost')
 
   return (
-    clientIp === '127.0.0.1' &&
-    (host === '127.0.0.1' || host === 'localhost') &&
-    userAgent.includes('Electron')
+    isLoopbackBrowser &&
+    (userAgent.includes('Electron') || !userAgent.includes('Mobile'))
   )
 }
 
